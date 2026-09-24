@@ -75,6 +75,9 @@ src/openjarvis/server/static/
 
 # Desktop (Tauri)
 frontend/src-tauri/target/
+# Downloaded Ollama sidecars (see frontend/src-tauri/scripts/download-ollama.sh);
+# never commit them from any src-tauri tree, including the retired desktop/ one.
+**/src-tauri/binaries/ollama-*
 
 # Worktrees
 .worktrees/
