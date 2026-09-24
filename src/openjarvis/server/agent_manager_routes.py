@@ -1015,7 +1015,9 @@ async def _stream_managed_agent(
                         _log_exc,
                     )
 
-                # Patch the agent's tool executor to emit progress
+                # Patch the agent's tool executor to emit progress.
+                # No confirm_callback: there is no human in this loop, so
+                # requires_confirmation tools are refused, not auto-approved.
                 dr_agent = DeepResearchAgent(
                     engine=engine,
                     model=model,
@@ -1026,8 +1028,6 @@ async def _stream_managed_agent(
                     agent_id=agent_id,
                     max_turns=int(config.get("max_turns", 8)),
                     temperature=float(config.get("temperature", 0.3)),
-                    interactive=True,
-                    confirm_callback=lambda _prompt: True,
                 )
                 if resolved_toolkit.mcp_clients:
                     dr_agent._mcp_clients = resolved_toolkit.mcp_clients
@@ -1312,11 +1312,12 @@ async def _stream_managed_agent(
     # at all — this is the live SSE chat path for managed agents (what
     # Tailscale/remote exposure actually hits), so tool calls made here ran
     # with zero RBAC gating and zero rate limiting regardless of config.
+    # No confirm_callback: this path has no channel for a human decision, so
+    # tools with requires_confirmation=True are refused rather than silently
+    # auto-approved.
     stream_tool_executor = ToolExecutor(
         tools=resolved_toolkit.instances,
         bus=bus,
-        interactive=True,
-        confirm_callback=lambda _prompt: True,
         capability_policy=getattr(app_state, "capability_policy", None),
         rate_limiter=getattr(app_state, "rate_limiter", None),
         agent_id=agent_id,
@@ -1886,8 +1887,6 @@ def create_agent_manager_router(
                                         request.app.state, "rate_limiter", None
                                     ),
                                     agent_id=agent_id,
-                                    interactive=True,
-                                    confirm_callback=lambda _prompt: True,
                                 )
 
                                 def handler(text: str) -> str:
@@ -1969,8 +1968,6 @@ def create_agent_manager_router(
                                         request.app.state, "rate_limiter", None
                                     ),
                                     agent_id=agent_id,
-                                    interactive=True,
-                                    confirm_callback=lambda _prompt: True,
                                 )
                         bus = getattr(request.app.state, "bus", None)
                         if bus is None:

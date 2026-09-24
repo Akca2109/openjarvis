@@ -284,11 +284,81 @@ class TestAskAgentOption:
         result = runner.invoke(
             cli,
             ["ask", "--agent", "confirming_agent", "Hello"],
+            input="y\n",
         )
 
         assert result.exit_code == 0
+        assert "Allow execution of tool 'dangerous'" in result.output
         assert "executed!" in result.output
         agent_setup.engine.generate.assert_not_called()
+
+    @pytest.mark.parametrize("user_input", ["n\n", "\n", ""])
+    def test_confirmation_tool_not_auto_approved(
+        self,
+        runner,
+        agent_setup,
+        user_input,
+    ):
+        """Regression: ``jarvis ask`` must not silently approve sensitive tools.
+
+        An explicit "n", the default (Enter) and EOF (no TTY) all deny.
+        """
+        agent_setup.config.tools.enabled = ["dangerous"]
+
+        result = runner.invoke(
+            cli,
+            ["ask", "--agent", "confirming_agent", "Hello"],
+            input=user_input,
+        )
+
+        assert result.exit_code == 0
+        assert "executed!" not in result.output
+        assert "execution denied by user" in result.output
+
+    def test_skill_pipeline_executor_not_auto_approved(
+        self,
+        runner,
+        agent_setup,
+        tmp_path,
+    ):
+        """Regression: the skill pipeline ToolExecutor must not auto-approve."""
+        from openjarvis.skills.manager import SkillManager
+
+        agent_setup.config.tools.enabled = ["dangerous"]
+        agent_setup.config.skills.enabled = True
+        agent_setup.config.skills.skills_dir = str(tmp_path / "skills")
+
+        captured = []
+        with patch.object(
+            SkillManager,
+            "set_tool_executor",
+            autospec=True,
+            side_effect=lambda _self, executor: captured.append(executor),
+        ):
+            result = runner.invoke(
+                cli,
+                ["ask", "--agent", "confirming_agent", "Hello"],
+                input="n\n",
+            )
+        assert result.exit_code == 0
+        assert len(captured) == 1
+        pipeline_executor = captured[0]
+
+        # No answer available (EOF) -> denied, tool body never runs.
+        with patch("click.termui.visible_prompt_func", side_effect=EOFError):
+            denied = pipeline_executor.execute(
+                ToolCall(id="p1", name="dangerous", arguments="{}")
+            )
+        assert denied.success is False
+        assert "executed!" not in denied.content
+
+        # Explicit approval still lets the tool run.
+        with patch("click.termui.visible_prompt_func", return_value="y"):
+            approved = pipeline_executor.execute(
+                ToolCall(id="p2", name="dangerous", arguments="{}")
+            )
+        assert approved.success is True
+        assert approved.content == "executed!"
 
 
 class TestAskSkillsAndTraces:

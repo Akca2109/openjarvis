@@ -53,6 +53,19 @@ LOCAL_ENGINES = {
 }
 
 
+def _confirm_tool_call(prompt: str) -> bool:
+    """Ask the user to approve a requires_confirmation tool call.
+
+    Defaults to deny, and denies when no answer can be read (EOF / non-TTY),
+    so a sensitive tool never runs without an explicit "yes". The prompt goes
+    to stderr to keep ``--json`` output on stdout clean.
+    """
+    try:
+        return click.confirm(f"\n{prompt}", default=False, err=True)
+    except click.Abort:
+        return False
+
+
 def _run_research(
     *,
     query_text: str,
@@ -419,7 +432,7 @@ def _run_agent(
                 capability_policy=capability_policy,
                 agent_id=getattr(agent_cls, "agent_id", agent_name),
                 interactive=True,
-                confirm_callback=lambda prompt: True,
+                confirm_callback=_confirm_tool_call,
             )
             skill_manager = SkillManager(
                 bus,
@@ -457,7 +470,7 @@ def _run_agent(
         agent_kwargs["tools"] = tools
         agent_kwargs["max_turns"] = config.agent.max_turns
         agent_kwargs["interactive"] = True
-        agent_kwargs["confirm_callback"] = lambda prompt: True
+        agent_kwargs["confirm_callback"] = _confirm_tool_call
         agent_kwargs["agent_id"] = agent_name
         if capability_policy is not None:
             agent_kwargs["capability_policy"] = capability_policy
