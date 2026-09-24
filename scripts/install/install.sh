@@ -218,6 +218,9 @@ fi
 # The Python runtime honors the same override (and, when OPENJARVIS_HOME is
 # unset, $XDG_DATA_HOME/openjarvis if XDG_DATA_HOME is set). With nothing set
 # the root is ~/.openjarvis, so existing installs are untouched.
+# Remember whether the user set OPENJARVIS_HOME so the analytics opt-in
+# lookup can follow the runtime's config-path precedence.
+OPENJARVIS_HOME_FROM_ENV="${OPENJARVIS_HOME:-}"
 OPENJARVIS_HOME="${OPENJARVIS_HOME:-$HOME/.openjarvis}"
 OPENJARVIS_REPO_URL="${OPENJARVIS_REPO_URL:-https://github.com/open-jarvis/OpenJarvis.git}"
 SRC_DIR="$OPENJARVIS_HOME/src"
@@ -249,8 +252,73 @@ ANON_ID_FILE="$OPENJARVIS_HOME/anon_id"
 INSTALL_START_EPOCH="$(date +%s)"
 CURRENT_STAGE=""
 
+analytics_config_path() {
+    # Same precedence as the Python runtime (core/config.py::load_config,
+    # core/paths.py::get_config_dir): $OPENJARVIS_CONFIG >
+    # $OPENJARVIS_HOME/config.toml > $XDG_DATA_HOME/openjarvis/config.toml >
+    # ~/.openjarvis/config.toml. Empty values count as unset.
+    local path
+    if [[ -n "${OPENJARVIS_CONFIG:-}" ]]; then
+        path="$OPENJARVIS_CONFIG"
+    elif [[ -n "${OPENJARVIS_HOME_FROM_ENV:-}" ]]; then
+        path="$OPENJARVIS_HOME_FROM_ENV/config.toml"
+    elif [[ -n "${XDG_DATA_HOME:-}" ]]; then
+        path="$XDG_DATA_HOME/openjarvis/config.toml"
+    else
+        path="$HOME/.openjarvis/config.toml"
+    fi
+    case "$path" in
+        "~/"*) path="$HOME/${path#"~/"}" ;;
+    esac
+    printf '%s\n' "$path"
+}
+
 analytics_enabled() {
-    return 0
+    # External analytics are opt-in, matching the Python runtime: send only
+    # if an existing config.toml has `enabled = true` under `[analytics]`.
+    # Read-only — never creates the config or the anon ID. Fails closed:
+    # a missing/unreadable file, or anything this line-based reader can't
+    # interpret with certainty (multi-line strings/arrays, duplicate keys,
+    # dotted/inline `analytics` keys, non-literal values), means disabled.
+    local cfg
+    cfg="$(analytics_config_path)" || return 1
+    [[ -f "$cfg" && -r "$cfg" ]] || return 1
+    LC_ALL=C awk '
+        BEGIN { top = 1; in_sec = 0; seen_sec = 0; seen_key = 0; bad = 0; val = "" }
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            sub(/^[ \t]+/, "", line)
+            sub(/[ \t]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            if (index(line, "\"\"\"") || index(line, "\047\047\047")) { bad = 1; exit }
+            if (substr(line, 1, 1) == "[") {
+                top = 0
+                if (line ~ /^\[[ \t]*analytics[ \t]*\][ \t]*(#.*)?$/) {
+                    if (seen_sec) { bad = 1; exit }
+                    seen_sec = 1; in_sec = 1
+                } else if (line ~ /^\[\[?[^][]+\]\]?[ \t]*(#.*)?$/) {
+                    in_sec = 0
+                } else { bad = 1; exit }
+                next
+            }
+            if (line !~ /^([A-Za-z0-9_-]+([ \t]*\.[ \t]*[A-Za-z0-9_-]+)*|"[^"]*")[ \t]*=/) {
+                bad = 1; exit
+            }
+            key = line
+            sub(/[ \t]*=.*$/, "", key)
+            if (top && key ~ /^"?analytics("|[ \t]*\.|$)/) { bad = 1; exit }
+            if (!in_sec) next
+            if (key == "\"enabled\"") { bad = 1; exit }
+            if (key != "enabled") next
+            if (seen_key) { bad = 1; exit }
+            seen_key = 1
+            val = line
+            sub(/^[^=]*=[ \t]*/, "", val)
+            sub(/[ \t]*#.*$/, "", val)
+        }
+        END { if (bad || val != "true") exit 1; exit 0 }
+    ' "$cfg" 2>/dev/null
 }
 
 detect_os() {

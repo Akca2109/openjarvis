@@ -1,20 +1,44 @@
 # Telemetry
 
-OpenJarvis ships **anonymous usage telemetry** by default so the team can
-see where the product breaks, what features people actually use, and
-how to make it better. This page documents exactly what is and isn't
-collected, where the data goes, and how to opt out.
+OpenJarvis includes **opt-in anonymous usage telemetry** that, if you
+enable it, helps the team see where the product breaks, what features
+people actually use, and how to make it better. This page documents
+exactly what is and isn't collected, where the data goes, and how to
+opt in or out.
 
 ## TL;DR
 
-- **On by default**, anonymous, no chat content.
+- **Off by default.** Nothing is sent unless you set
+  `[analytics] enabled = true` in `~/.openjarvis/config.toml`.
 - **Anonymous** — one random UUID per install, no email, no name, no IP.
 - **No chat content, ever.** Only counts, timings, and feature names.
 - **Self-hosted backend** on the OpenJarvis team's PostHog instance —
   data is not sold or shared with third parties.
 - **365-day retention**, after which events are deleted automatically.
 
-## What we collect
+## Opting in / out
+
+External analytics are controlled by a single setting in
+`~/.openjarvis/config.toml`:
+
+```toml
+[analytics]
+enabled = true   # opt in; omit the section or set false to stay opted out
+```
+
+A config without an `[analytics]` section (including a freshly
+generated one) keeps analytics disabled. When disabled, the backend
+does not initialise the PostHog client, the frontend never initialises
+`posthog-js`, and no `anon_id` file is created. The install script
+applies the same rule: it sends install-funnel events only if the
+config it would use (`$OPENJARVIS_CONFIG`, else
+`$OPENJARVIS_HOME/config.toml`, else `$XDG_DATA_HOME/openjarvis/config.toml`,
+else `~/.openjarvis/config.toml`) already exists with
+`enabled = true` under `[analytics]`, so a first-time install sends
+nothing. It never creates the config to decide, and anything it cannot
+read unambiguously counts as not opted in.
+
+## What we collect (only when opted in)
 
 ### Lifecycle events
 
@@ -92,10 +116,11 @@ dropped. Tests covering the patterns: [`tests/analytics/test_redaction.py`](../t
 
 ## How identity works
 
-A single UUID v4 is generated on first install and stored at
-`~/.openjarvis/anon_id`. The install script, backend, and frontend all
-read the same file so events across the full lifecycle tie to one
-person — without us ever knowing who that person is.
+When external analytics is enabled, a single UUID v4 is generated on
+first analytics-enabled use and stored at `~/.openjarvis/anon_id`.
+The installer, backend, and frontend read the same file so analytics
+events across the lifecycle can be tied to one anonymous installation
+without identifying the user.
 
 Delete the file (`rm ~/.openjarvis/anon_id`) and a fresh UUID will be
 generated next time the app runs. The previous UUID and its events
