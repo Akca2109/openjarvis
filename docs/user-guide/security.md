@@ -67,11 +67,30 @@ requirements cannot be weakened by omitting them from a tool's metadata. Remote
 MCP tools require `tool:invoke`, and third-party tools can declare additional
 requirements. Capability grants do not bypass a tool's confirmation requirement.
 
-The `shared` and `server` security profiles enable capabilities with
-`default_deny = true`. Without a policy file, their baseline grants new agents
-`file:read`, `network:fetch`, `memory:read`, and `memory:write`. Code execution,
-file writes, channel sends, scheduling, and administrative operations require
-additional grants. The personal/default profile keeps capability checks opt-in.
+Capability checks are enabled with `default_deny = true` in every profile,
+including the default personal one. Without a policy file, identities with no
+policy of their own receive the profile's baseline:
+
+| Baseline | Used by | Grants |
+| --- | --- | --- |
+| `personal` | default, `personal` | `file:read`, `file:write`, `network:fetch`, `code:execute`, `memory:read`, `memory:write`, `channel:send`, `schedule:create`, `tool:invoke` |
+| `restricted` | `shared`, `server` | `file:read`, `network:fetch`, `memory:read`, `memory:write` |
+
+No baseline grants `system:admin`, so agent management (`agent_*`),
+`channel_list`, `channel_status`, `record_decision`, `execute_pending_actions`
+(used by the proactive agent to run approved actions), unreviewed built-in
+tools, and tools declaring capabilities outside this list are denied until a
+policy file grants them. Capability checks and confirmation are separate
+controls: a granted `code:execute` does not skip `shell_exec` confirmation.
+
+```toml
+[security.capabilities]
+baseline = "restricted"   # tighten the personal default
+```
+
+Configurations that set `default_deny = true` explicitly without a `baseline`
+keep the `restricted` baseline they received before the personal baseline
+existed.
 
 To choose the exact grants, configure a policy file:
 
@@ -87,9 +106,10 @@ Individual fields override the profile: specifying only `policy_path` preserves
 its enabled, default-deny behavior. An explicit `enabled = false` disables the
 capability check, and an explicit `default_deny = false` allows capabilities not
 otherwise denied. When capabilities are enabled, policy initialization failure
-stops startup in every profile. Shared/server profiles also stop if rate-limit
-initialization fails. Missing or malformed policy files are errors; the native
-Rust capability backend remains required.
+(including an unknown `baseline`) stops startup in every profile. Shared/server
+profiles also stop if rate-limit initialization fails. Missing or malformed
+policy files are errors. Checks use the native Rust backend when it is
+installed and an equivalent pure-Python backend otherwise.
 
 An explicit policy file receives **no automatic baseline grants**. For example,
 this policy permits reads through MCP and denies other capabilities:

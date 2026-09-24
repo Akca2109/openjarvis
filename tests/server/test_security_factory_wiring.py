@@ -277,3 +277,18 @@ def test_factory_rejects_invalid_enabled_policy_in_every_profile(tmp_path, profi
     config.security.capabilities.policy_path = str(path)
     with pytest.raises(RuntimeError, match="Capability policy initialization"):
         create_app(MagicMock(), "model", config=config)
+
+
+def test_factory_default_personal_config_enforces_capabilities(tmp_path):
+    """Stage 0C: the default (personal) config yields an enforcing policy."""
+    config = _config()
+    config.security.audit_log_path = str(tmp_path / "audit.db")
+
+    app = create_app(MagicMock(), "model", config=config)
+
+    policy = app.state.capability_policy
+    assert isinstance(policy, CapabilityPolicy)
+    assert policy.check("server:api", "file:read")
+    assert policy.check("managed-agent-uuid", "code:execute")
+    assert not policy.check("server:api", "system:admin")
+    assert not policy.check("managed-agent-uuid", "system:admin")

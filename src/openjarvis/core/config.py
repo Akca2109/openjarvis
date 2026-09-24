@@ -1424,11 +1424,20 @@ class ChannelConfig:
 
 @dataclass(slots=True)
 class CapabilitiesConfig:
-    """RBAC capability system settings."""
+    """RBAC capability system settings.
 
-    enabled: bool = False
+    Enforcement is on by default. Without ``policy_path``, ``baseline`` names
+    the grants given to identities with no policy of their own: ``personal``
+    grants the reviewed capabilities needed for normal single-user assistant
+    workflows, while ``restricted`` grants read, fetch, and memory access only.
+    Neither baseline grants ``system:admin`` or unknown capabilities. An
+    explicit policy file receives no baseline grants.
+    """
+
+    enabled: bool = True
     policy_path: str = ""
-    default_deny: bool = False
+    default_deny: bool = True
+    baseline: str = "personal"  # "personal" | "restricted"
 
 
 @dataclass(slots=True)
@@ -1471,6 +1480,11 @@ _SECURITY_PROFILES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "rate_limit_enabled": True,
             "local_engine_bypass": False,
             "local_tool_bypass": False,
+            "capabilities": {
+                "enabled": True,
+                "default_deny": True,
+                "baseline": "personal",
+            },
         },
         "server": {
             "host": "127.0.0.1",
@@ -1482,7 +1496,11 @@ _SECURITY_PROFILES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "rate_limit_enabled": True,
             "local_engine_bypass": False,
             "local_tool_bypass": False,
-            "capabilities": {"enabled": True, "default_deny": True},
+            "capabilities": {
+                "enabled": True,
+                "default_deny": True,
+                "baseline": "restricted",
+            },
         },
         "server": {
             "host": "127.0.0.1",
@@ -1496,7 +1514,11 @@ _SECURITY_PROFILES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "rate_limit_burst": 5,
             "local_engine_bypass": False,
             "local_tool_bypass": False,
-            "capabilities": {"enabled": True, "default_deny": True},
+            "capabilities": {
+                "enabled": True,
+                "default_deny": True,
+                "baseline": "restricted",
+            },
         },
         "server": {
             "host": "0.0.0.0",
@@ -2137,6 +2159,15 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
                 f"capabilities.{key}" for key in _security_data["capabilities"]
             )
         apply_security_profile(cfg.security, cfg.server, overrides=_user_security_keys)
+        # Before the personal baseline existed, an explicit ``default_deny``
+        # without a policy file received the restricted baseline in every
+        # profile. Keep that meaning so turning on default-deny explicitly
+        # can never grant more than it used to.
+        if (
+            "capabilities.default_deny" in _user_security_keys
+            and "capabilities.baseline" not in _user_security_keys
+        ):
+            cfg.security.capabilities.baseline = "restricted"
 
         # Mining: dedicated parser for tagged-union submit_target
         cfg.mining = _parse_mining_section(data)

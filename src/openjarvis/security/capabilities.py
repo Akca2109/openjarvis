@@ -45,6 +45,87 @@ class AgentPolicy:
     deny: List[str] = field(default_factory=list)  # explicit denials
 
 
+# Baseline grants given to the ``_default`` identity when capabilities are
+# enabled with ``default_deny`` and no policy file.  Neither baseline grants
+# ``system:admin``; agent management, pending-action execution and unreviewed
+# built-ins therefore always need an explicit policy-file grant.
+RESTRICTED_BASELINE_GRANTS: tuple[str, ...] = (
+    "file:read",
+    "network:fetch",
+    "memory:read",
+    "memory:write",
+)
+PERSONAL_BASELINE_GRANTS: tuple[str, ...] = RESTRICTED_BASELINE_GRANTS + (
+    "file:write",
+    "code:execute",
+    "channel:send",
+    "schedule:create",
+    "tool:invoke",
+)
+CAPABILITY_BASELINES: Dict[str, tuple[str, ...]] = {
+    "personal": PERSONAL_BASELINE_GRANTS,
+    "restricted": RESTRICTED_BASELINE_GRANTS,
+}
+
+
+def _glob_match(pattern: str, text: str) -> bool:
+    """Port of the Rust backend's ``glob_match`` (``*`` is the only wildcard)."""
+    if pattern == "*" or pattern == text:
+        return True
+    parts = pattern.split("*")
+    if len(parts) == 1:
+        return False
+    pos = 0
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+        found = text.find(part, pos)
+        if found < 0 or (i == 0 and found != 0):
+            return False
+        pos = found + len(part)
+    return not parts[-1] or text.endswith(parts[-1])
+
+
+class _PythonCapabilityBackend:
+    """Pure-Python mirror of the Rust ``CapabilityPolicy`` binding.
+
+    The native extension is not part of the published wheel, and capability
+    enforcement is on by default.  Without this backend a default install
+    would either fail to start or run unenforced; with it the same decision
+    procedure (deny wins, then grants, then ``default_deny``) always runs.
+    """
+
+    def __init__(self, default_deny: bool) -> None:
+        self._default_deny = default_deny
+        self._grants: Dict[str, List[tuple[str, str]]] = {}
+        self._deny: Dict[str, List[str]] = {}
+
+    def grant(self, agent_id: str, capability: str, pattern: str) -> None:
+        self._grants.setdefault(agent_id, []).append((capability, pattern))
+        self._deny.setdefault(agent_id, [])
+
+    def deny(self, agent_id: str, capability: str) -> None:
+        self._deny.setdefault(agent_id, []).append(capability)
+        self._grants.setdefault(agent_id, [])
+
+    def check(self, agent_id: str, capability: str, resource: str) -> bool:
+        if agent_id not in self._grants:
+            return not self._default_deny
+        if any(_glob_match(d, capability) for d in self._deny[agent_id]):
+            return False
+        for cap_pattern, res_pattern in self._grants[agent_id]:
+            if _glob_match(cap_pattern, capability):
+                if resource and res_pattern != "*":
+                    if _glob_match(res_pattern, resource):
+                        return True
+                else:
+                    return True
+        return not self._default_deny
+
+    def list_agents(self) -> List[str]:
+        return list(self._grants)
+
+
 class CapabilityPolicy:
     """RBAC capability policy for tool dispatch.
 
@@ -54,6 +135,9 @@ class CapabilityPolicy:
     Default policy: if no explicit policy exists for an agent, all
     capabilities are granted (open by default). Set ``default_deny=True``
     to flip to deny-by-default.
+
+    Checks run in the native Rust backend when it is installed and in an
+    equivalent pure-Python backend otherwise.
     """
 
     def __init__(
@@ -67,8 +151,12 @@ class CapabilityPolicy:
 
         from openjarvis._rust_bridge import get_rust_module
 
-        _rust = get_rust_module()
-        self._rust_impl = _rust.CapabilityPolicy(default_deny=default_deny)
+        try:
+            _rust = get_rust_module()
+        except ImportError:
+            self._rust_impl: Any = _PythonCapabilityBackend(default_deny)
+        else:
+            self._rust_impl = _rust.CapabilityPolicy(default_deny=default_deny)
 
         if policy_path:
             self._load_file(Path(policy_path))
@@ -336,9 +424,12 @@ def canonical_tool_capabilities(tool: Any) -> List[str]:
 
 __all__ = [
     "AgentPolicy",
+    "CAPABILITY_BASELINES",
     "Capability",
     "CapabilityGrant",
     "CapabilityPolicy",
     "canonical_tool_capabilities",
     "DEFAULT_TOOL_CAPABILITIES",
+    "PERSONAL_BASELINE_GRANTS",
+    "RESTRICTED_BASELINE_GRANTS",
 ]

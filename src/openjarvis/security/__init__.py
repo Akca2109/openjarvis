@@ -65,27 +65,28 @@ def setup_security(
     cap_policy = None
     if config.security.capabilities.enabled:
         try:
-            from openjarvis.security.capabilities import CapabilityPolicy
-
-            cap_policy = CapabilityPolicy(
-                policy_path=config.security.capabilities.policy_path or None,
-                default_deny=config.security.capabilities.default_deny,
+            from openjarvis.security.capabilities import (
+                CAPABILITY_BASELINES,
+                CapabilityPolicy,
             )
-            # No explicit policy file: grant a conservative baseline to the
+
+            caps_cfg = config.security.capabilities
+            cap_policy = CapabilityPolicy(
+                policy_path=caps_cfg.policy_path or None,
+                default_deny=caps_cfg.default_deny,
+            )
+            # No explicit policy file: grant the configured baseline to the
             # "_default" wildcard agent so default-deny doesn't silently
-            # break every managed agent (whose UUIDs aren't known ahead of
-            # time). Read/fetch/memory only — writes, code execution, and
-            # admin tools require an explicit per-agent grant.
-            if (
-                config.security.capabilities.default_deny
-                and not config.security.capabilities.policy_path
-            ):
-                for cap in (
-                    "file:read",
-                    "network:fetch",
-                    "memory:read",
-                    "memory:write",
-                ):
+            # break every agent (managed-agent UUIDs aren't known ahead of
+            # time). No baseline grants system:admin; shared/server use the
+            # restricted baseline, so writes and code execution there also
+            # need an explicit per-agent grant.
+            if caps_cfg.default_deny and not caps_cfg.policy_path:
+                if caps_cfg.baseline not in CAPABILITY_BASELINES:
+                    raise ValueError(
+                        f"Unknown capability baseline {caps_cfg.baseline!r}"
+                    )
+                for cap in CAPABILITY_BASELINES[caps_cfg.baseline]:
                     cap_policy.grant("_default", cap)
         except Exception as exc:
             # Explicitly enabled enforcement is a contract in every profile.

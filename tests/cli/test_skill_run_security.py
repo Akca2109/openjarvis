@@ -38,6 +38,7 @@ def skill_cli(tmp_path):
     cfg.security.audit_log_path = str(tmp_path / "audit.db")
     cfg.security.capabilities.enabled = True
     cfg.security.capabilities.default_deny = True
+    cfg.security.capabilities.baseline = "restricted"
     cfg.security.rate_limit_enabled = False
     cfg.learning.skills.overlay_dir = str(tmp_path / "overlays")
     bus = EventBus(record_history=True)

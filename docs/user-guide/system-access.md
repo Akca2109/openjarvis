@@ -168,7 +168,11 @@ works out where to click.
 Access widens and narrows through `tools.enabled`. Drop entries to take
 capabilities away. That list is the whole grant.
 
-Two stronger isolation options exist. Both are off by default:
+Capability checks are on by default. The personal baseline allows file
+reads and writes, network fetches, code execution, memory, channel sends,
+scheduling and MCP tools, but not `system:admin` (agent management, channel
+administration, executing queued proactive actions). Tighten it, or opt into
+the sandbox, which is off by default:
 
 ```toml
 [sandbox]
@@ -176,14 +180,12 @@ enabled = true          # run tools inside a container
 runtime = "docker"
 
 [security.capabilities]
-enabled = true          # RBAC over declared tool capabilities
-policy_path = "~/.openjarvis/policy.yaml"
+baseline = "restricted" # read, fetch and memory only
+# policy_path = "/absolute/path/capabilities.json"  # exact per-agent grants
 ```
 
-!!! note "Capabilities are open by default even once enabled"
-    `CapabilityPolicy` is built with `default_deny=False` and no config key
-    exposes that flag, so an agent with no explicit policy entry gets every
-    capability. Write entries for every agent you mean to restrict.
+See [Capability policies](security.md#capability-policies-and-runtime-identities)
+for the policy file format.
 
 For anything untrusted, reach for `docker_shell_exec` and
 `code_interpreter_docker` rather than the host-side versions.
