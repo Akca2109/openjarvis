@@ -360,7 +360,7 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
             app_config=config,
         )
 
-    # Hand the completed exchange to the background memory service.
+    # Publish the completed exchange (never written to automatic memory).
     _remember_exchange(
         getattr(request.app.state, "memory_service", None),
         query_text_for_complexity,
@@ -388,24 +388,28 @@ def _record_completed_exchange(
     bus=None,
     source: str = "server.chat",
 ) -> None:
-    """Publish or submit a completed exchange without blocking a reply."""
-    if not user_text:
+    """Publish a completed exchange for lifecycle subscribers.
+
+    Server exchanges are never submitted to *memory_service* directly: API
+    clients have no authenticated mapping to the local owner, so they must
+    not write the owner's automatic fact store. The memory service likewise
+    ignores published ``server.chat*`` exchanges.
+    """
+    del memory_service
+    if not user_text or bus is None:
         return
     try:
-        if bus is not None:
-            from openjarvis.memory import publish_completed_exchange
+        from openjarvis.memory import publish_completed_exchange
 
-            publish_completed_exchange(
-                bus,
-                user_text,
-                assistant_text,
-                source=source,
-            )
-        elif memory_service is not None:
-            memory_service.submit(user_text, assistant_text)
+        publish_completed_exchange(
+            bus,
+            user_text,
+            assistant_text,
+            source=source,
+        )
     except Exception:  # noqa: BLE001 — memory is best-effort, never fail a reply
         logging.getLogger("openjarvis.server").debug(
-            "Memory submit failed",
+            "Completed-exchange publish failed",
             exc_info=True,
         )
 

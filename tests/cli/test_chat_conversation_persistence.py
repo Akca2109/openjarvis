@@ -114,10 +114,18 @@ def test_two_turn_chat_is_persisted(db_path):
     assert all(m.session_id is None and m.trace_id is None for m in messages)
     assert all(m.metadata == {} for m in messages)
 
-    # Existing memory publishing is unchanged: once per completed turn.
+    # Memory publishing: once per completed turn, carrying the provenance
+    # of the durable user message it came from.
     assert publish.call_count == 2
     assert publish.call_args_list[0].args[1:] == ("hello", "Hi!")
-    assert publish.call_args_list[0].kwargs == {"source": "cli.chat"}
+    assert publish.call_args_list[0].kwargs == {
+        "source": "cli.chat",
+        "conversation_id": conv.conversation_id,
+        "user_message_id": messages[0].message_id,
+    }
+    assert publish.call_args_list[1].kwargs["user_message_id"] == (
+        messages[2].message_id
+    )
 
 
 def test_agent_id_recorded_when_agent_runs(db_path):
@@ -161,7 +169,10 @@ def test_generation_failure_keeps_user_turn_only(db_path):
         ("user", "two"),
         ("assistant", "ok"),
     ]
+    # The failed turn never reaches memory; only the completed one does.
     assert publish.call_count == 1
+    assert publish.call_args.args[1:] == ("two", "ok")
+    assert publish.call_args.kwargs["user_message_id"] == messages[1].message_id
 
 
 def test_disabled_config_creates_no_database(db_path):
@@ -194,6 +205,11 @@ def test_store_open_failure_does_not_break_chat(db_path):
     assert "still here" in result.output
     assert "Conversation history disabled (PermissionError)" in result.output
     assert publish.call_count == 1
+    assert publish.call_args.kwargs == {
+        "source": "cli.chat",
+        "conversation_id": None,
+        "user_message_id": None,
+    }
 
 
 def test_write_failure_mid_chat_warns_once_and_chat_continues(db_path):

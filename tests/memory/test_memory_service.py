@@ -162,7 +162,7 @@ def test_long_unicode_injection_cannot_kill_memory_worker(tmp_path):
         assert svc._thread is not None and svc._thread.is_alive()
 
         assert svc.submit("I like tea", "noted") is True
-        assert _wait_until(lambda: ("I like tea", "noted") in extractor.calls)
+        assert _wait_until(lambda: ("I like tea", "") in extractor.calls)
         assert svc._thread.is_alive()
     finally:
         svc.stop()
@@ -277,10 +277,11 @@ def test_completed_exchange_event_extracts_and_stores(tmp_path):
             bus,
             "I like jazz",
             "Noted.",
-            source="test",
+            source="cli.chat",
         )
         assert _wait_until(lambda: svc.fact_count() == 1)
-        assert extractor.calls == [("I like jazz", "Noted.")]
+        # Facts come from the user's side only.
+        assert extractor.calls == [("I like jazz", "")]
     finally:
         svc.stop()
 
@@ -293,7 +294,7 @@ def test_completed_exchange_event_unsubscribes_on_stop(tmp_path):
     svc.start()
     svc.stop()
 
-    publish_completed_exchange(bus, "I like jazz", "Noted.", source="test")
+    publish_completed_exchange(bus, "I like jazz", "Noted.", source="cli.chat")
 
     assert extractor.calls == []
 

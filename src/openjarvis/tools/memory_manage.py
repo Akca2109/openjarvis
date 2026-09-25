@@ -51,6 +51,9 @@ class MemoryManageTool(BaseTool):
                 "required": ["action"],
             },
             category="memory",
+            # Entries are injected into every future system prompt, so a
+            # write must be approved by the user, never by the model alone.
+            requires_confirmation=True,
         )
 
     def execute(self, **params: Any) -> ToolResult:

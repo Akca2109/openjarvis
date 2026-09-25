@@ -579,8 +579,9 @@ def chat(
 
             # Add user message
             history.append(Message(role=Role.USER, content=user_input))
+            user_message_id = None
             if conversation_recorder is not None:
-                conversation_recorder.record_user(user_input)
+                user_message_id = conversation_recorder.record_user(user_input)
 
             generation_history = history
             agent_context_message = None
@@ -662,6 +663,12 @@ def chat(
                     user_input,
                     content,
                     source="cli.chat",
+                    conversation_id=(
+                        conversation_recorder.conversation_id
+                        if conversation_recorder is not None
+                        else None
+                    ),
+                    user_message_id=user_message_id,
                 )
             except KeyboardInterrupt:
                 console.print("\n[dim]Generation interrupted.[/dim]")

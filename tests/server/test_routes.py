@@ -103,7 +103,9 @@ class _SpyMemoryService:
 
 
 class TestMemoryServiceWiring:
-    def test_non_streaming_completion_feeds_memory(self):
+    """Server exchanges must never reach the owner's automatic fact store."""
+
+    def test_non_streaming_completion_does_not_feed_memory(self):
         engine = _make_engine(content="remembered reply")
         spy = _SpyMemoryService()
         app = create_app(
@@ -122,9 +124,9 @@ class TestMemoryServiceWiring:
             },
         )
         assert resp.status_code == 200
-        assert spy.submissions == [("I like jazz", "remembered reply")]
+        assert spy.submissions == []
 
-    def test_agent_completion_feeds_memory(self):
+    def test_agent_completion_does_not_feed_memory(self):
         engine = _make_engine()
         agent = _make_agent(content="agent reply")
         spy = _SpyMemoryService()
@@ -145,7 +147,7 @@ class TestMemoryServiceWiring:
             },
         )
         assert resp.status_code == 200
-        assert spy.submissions == [("remember this", "agent reply")]
+        assert spy.submissions == []
 
     def test_non_streaming_completion_publishes_completed_exchange(self):
         bus = EventBus(record_history=True)
@@ -169,7 +171,7 @@ class TestMemoryServiceWiring:
         assert events[0].data["user_text"] == "publish this"
         assert events[0].data["assistant_text"] == "event reply"
 
-    def test_streaming_completion_feeds_memory_without_bus(self):
+    def test_streaming_completion_does_not_feed_memory_without_bus(self):
         engine = _make_engine()
         spy = _SpyMemoryService()
         app = create_app(
@@ -191,7 +193,7 @@ class TestMemoryServiceWiring:
 
         assert resp.status_code == 200
         assert "data:" in resp.text
-        assert spy.submissions == [("stream remember", "Hello world")]
+        assert spy.submissions == []
 
     def test_streaming_completion_publishes_completed_exchange(self):
         bus = EventBus(record_history=True)
@@ -216,6 +218,59 @@ class TestMemoryServiceWiring:
         assert len(events) == 1
         assert events[0].data["user_text"] == "stream event"
         assert events[0].data["assistant_text"] == "Hello world"
+
+    def test_server_exchange_does_not_populate_owner_fact_store(self, tmp_path):
+        """H: a real memory service on the server bus stores nothing."""
+        from openjarvis.memory import FactExtractor, LocalFactStore, MemoryService
+
+        class _CopyingEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, messages, **kwargs):
+                self.calls += 1
+                return {"content": '["User likes jazz"]'}
+
+        bus = EventBus(record_history=True)
+        extraction_engine = _CopyingEngine()
+        facts_path = tmp_path / "memory_facts.jsonl"
+        store = LocalFactStore(facts_path)
+        memory_service = MemoryService(
+            store, FactExtractor(extraction_engine, "m"), event_bus=bus
+        )
+        memory_service.start()
+        try:
+            app = create_app(
+                _make_engine(content="Noted."),
+                "test-model",
+                bus=bus,
+                memory_service=memory_service,
+                config=_test_config(),
+            )
+            client = TestClient(app)
+            for stream in (False, True):
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test-model",
+                        "messages": [{"role": "user", "content": "I like jazz"}],
+                        "stream": stream,
+                    },
+                )
+                assert resp.status_code == 200
+            memory_service._queue.join()
+        finally:
+            memory_service.stop()
+
+        sources = [
+            e.data["source"]
+            for e in bus.history
+            if e.event_type == EventType.CHAT_EXCHANGE_COMPLETED
+        ]
+        assert sources == ["server.chat", "server.chat.stream"]
+        assert extraction_engine.calls == 0
+        assert store.list() == []
+        assert not facts_path.exists()
 
     def test_no_memory_service_is_noop(self):
         engine = _make_engine()

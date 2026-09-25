@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, List
+from typing import Any, Iterable, Iterator, List, Mapping, Optional
 
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.registry import FactStoreRegistry
@@ -89,6 +89,17 @@ TRUST_UNTRUSTED = "untrusted"  # scanner flagged the text → quarantined
 RECALLABLE_TRUST_TIERS = frozenset({"", TRUST_AUTO, TRUST_TRUSTED})
 _RECALLABLE_TIERS = RECALLABLE_TRUST_TIERS  # internal alias
 
+# Optional per-fact provenance, recorded on facts written by the memory
+# service. Every field is additive and defaults to "" so JSONL rows written
+# before provenance existed keep loading unchanged.
+PROVENANCE_FIELDS = (
+    "origin",  # surface that produced the exchange, e.g. "cli.chat"
+    "conversation_id",  # conversations.db conversation, when recorded
+    "user_message_id",  # conversations.db message the fact came from
+    "owner",  # canonical user the fact belongs to ("owner" = local owner)
+    "derived_from",  # which side of the exchange was extracted ("user")
+)
+
 
 @contextmanager
 def _cross_process_lock(lock_path: Path) -> Iterator[None]:
@@ -133,6 +144,12 @@ class Fact:
     created_at: float = 0.0
     # Provenance tier: one of the TRUST_* constants above ("" for legacy rows).
     trust: str = ""
+    # Provenance (see PROVENANCE_FIELDS); "" when unknown or legacy.
+    origin: str = ""
+    conversation_id: str = ""
+    user_message_id: str = ""
+    owner: str = ""
+    derived_from: str = ""
 
     @property
     def trusted_for_recall(self) -> bool:
@@ -165,15 +182,23 @@ class FactStore(ABC):
                 added += 1
         return added
 
-    def add_with_trust(self, text: str, source: str = "", trust: str = "") -> bool:
+    def add_with_trust(
+        self,
+        text: str,
+        source: str = "",
+        trust: str = "",
+        provenance: Optional[Mapping[str, str]] = None,
+    ) -> bool:
         """Store a provenance-aware fact without breaking legacy backends.
 
         Third-party stores implementing the original ``add(text, source)``
         contract inherit this adapter. Recallable facts are stored normally;
         quarantined or unknown tiers are dropped because a backend that cannot
         persist provenance cannot safely retain them for model-facing recall.
+        Per-fact *provenance* is likewise dropped by this adapter.
         Provenance-aware stores should override this method.
         """
+        del provenance
         if (trust or "").strip().lower() not in _RECALLABLE_TIERS:
             return False
         return self.add(text, source=source)
@@ -183,10 +208,15 @@ class FactStore(ABC):
         texts: Iterable[str],
         source: str = "",
         trust: str = "",
+        provenance: Optional[Mapping[str, str]] = None,
     ) -> int:
         """Store several provenance-aware facts."""
         return sum(
-            bool(self.add_with_trust(text, source=source, trust=trust))
+            bool(
+                self.add_with_trust(
+                    text, source=source, trust=trust, provenance=provenance
+                )
+            )
             for text in texts
         )
 
@@ -211,6 +241,11 @@ class FactStore(ABC):
     @abstractmethod
     def count(self) -> int:
         """Return the number of stored facts."""
+
+
+def _provenance_kwargs(values: Mapping[str, Any]) -> dict[str, str]:
+    """Pick known provenance fields from *values*, as strings ("" if unset)."""
+    return {name: str(values.get(name, "") or "") for name in PROVENANCE_FIELDS}
 
 
 @FactStoreRegistry.register("local")
@@ -266,6 +301,7 @@ class LocalFactStore(FactStore):
                     source=str(obj.get("source", "")),
                     created_at=float(obj.get("created_at", 0.0) or 0.0),
                     trust=str(obj.get("trust", "")),
+                    **_provenance_kwargs(obj),
                 )
             )
         return facts
@@ -304,7 +340,13 @@ class LocalFactStore(FactStore):
 
     # -- FactStore API ------------------------------------------------------
 
-    def add(self, text: str, source: str = "", trust: str = "") -> bool:
+    def add(
+        self,
+        text: str,
+        source: str = "",
+        trust: str = "",
+        provenance: Optional[Mapping[str, str]] = None,
+    ) -> bool:
         text = (text or "").strip()
         if not text:
             return False
@@ -325,7 +367,13 @@ class LocalFactStore(FactStore):
                     self._flush()
                 return False  # dedupe
             self._facts.append(
-                Fact(text=text, source=source, created_at=time.time(), trust=trust)
+                Fact(
+                    text=text,
+                    source=source,
+                    created_at=time.time(),
+                    trust=trust,
+                    **_provenance_kwargs(provenance or {}),
+                )
             )
             # Enforce the cap by evicting the oldest entries. max_facts is
             # always positive (validated in __init__), so this slice can't
@@ -336,8 +384,14 @@ class LocalFactStore(FactStore):
             self._flush()
         return True
 
-    def add_with_trust(self, text: str, source: str = "", trust: str = "") -> bool:
-        return self.add(text, source=source, trust=trust)
+    def add_with_trust(
+        self,
+        text: str,
+        source: str = "",
+        trust: str = "",
+        provenance: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        return self.add(text, source=source, trust=trust, provenance=provenance)
 
     def set_trust(self, index: int, trust: str) -> bool:
         trust = (trust or "").strip().lower()
@@ -444,6 +498,7 @@ def load_configured_facts(config: Any) -> List[Fact]:
 
 
 __all__ = [
+    "PROVENANCE_FIELDS",
     "RECALLABLE_TRUST_TIERS",
     "TRUST_AUTO",
     "TRUST_TRUSTED",

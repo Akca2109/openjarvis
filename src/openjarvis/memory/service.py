@@ -18,9 +18,11 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
+from openjarvis.conversations.store import OWNER_USER_ID
 from openjarvis.core.events import Event, EventBus, EventType
+from openjarvis.memory.credentials import contains_credential
 from openjarvis.memory.extractor import FactExtractor
 from openjarvis.memory.store import (
     TRUST_AUTO,
@@ -37,6 +39,13 @@ _BLOCKING_THREAT_LEVELS = frozenset({"high", "critical"})
 
 # Sentinel pushed onto the queue to wake the worker for shutdown.
 _STOP = object()
+
+# Surfaces whose published exchanges may become automatic facts, mapped to
+# the canonical user those facts belong to. Only the local CLI chat is tied
+# to the conversation store's owner; server exchanges come from API clients
+# with no authenticated owner mapping, so they must not write the owner's
+# memory.
+_AUTOMATIC_FACT_ORIGINS: Dict[str, str] = {"cli.chat": OWNER_USER_ID}
 
 
 class MemoryService:
@@ -98,8 +107,18 @@ class MemoryService:
 
     # -- submission ---------------------------------------------------------
 
-    def submit(self, user_text: str, assistant_text: str = "") -> bool:
+    def submit(
+        self,
+        user_text: str,
+        assistant_text: str = "",
+        *,
+        provenance: Optional[Mapping[str, str]] = None,
+    ) -> bool:
         """Queue an exchange for extraction. Non-blocking; never raises.
+
+        Facts are extracted from *user_text* only; *assistant_text* is used
+        solely for the injection scan. *provenance* (see
+        ``memory.store.PROVENANCE_FIELDS``) is recorded on every stored fact.
 
         Returns True if the job was enqueued, False if the service is not
         running or the queue is full (in which case the exchange is dropped
@@ -110,7 +129,7 @@ class MemoryService:
         if not user_text or not user_text.strip():
             return False
         try:
-            self._queue.put_nowait((user_text, assistant_text))
+            self._queue.put_nowait((user_text, assistant_text, dict(provenance or {})))
             return True
         except queue.Full:
             logger.debug("Memory service queue full; dropping exchange")
@@ -137,11 +156,25 @@ class MemoryService:
         self._subscribed = False
 
     def _on_completed_exchange(self, event: Event) -> None:
-        """Queue a completed chat exchange published on the event bus."""
+        """Queue a completed chat exchange published on the event bus.
+
+        Only exchanges from an owner-bound surface are accepted; anything
+        else (e.g. ``server.chat``) is ignored.
+        """
         data = event.data or {}
+        origin = str(data.get("source", "") or "")
+        owner = _AUTOMATIC_FACT_ORIGINS.get(origin)
+        if owner is None:
+            return
         self.submit(
             str(data.get("user_text", "") or ""),
             str(data.get("assistant_text", "") or ""),
+            provenance={
+                "origin": origin,
+                "conversation_id": str(data.get("conversation_id", "") or ""),
+                "user_message_id": str(data.get("user_message_id", "") or ""),
+                "owner": owner,
+            },
         )
 
     # -- worker -------------------------------------------------------------
@@ -210,17 +243,33 @@ class MemoryService:
         return name in _BLOCKING_THREAT_LEVELS
 
     def _process(self, job: Any) -> None:
-        user_text, assistant_text = job
+        user_text, assistant_text, *rest = job
+        provenance: Dict[str, str] = dict(rest[0]) if rest else {}
         # Scan BEFORE extraction so an overt injection attempt never reaches the
-        # extraction model or the store at all.
+        # extraction model or the store at all. The whole exchange is scanned
+        # even though only the user's side is extracted from.
         if self._blocks_exchange(self._scan(f"{user_text}\n{assistant_text}")):
             # info, not debug: a silently-dropped exchange must be distinguishable
             # from "nothing to extract" in the logs.
             logger.info("Memory extraction skipped: injection detected in exchange")
             return
-        facts = self._extractor.extract(user_text, assistant_text)
+        # Assistant output is never a fact source (see FactExtractor).
+        facts = self._extractor.extract(user_text)
         if not facts:
             return
+        # Plaintext secrets are dropped outright, never quarantined: an
+        # untrusted row would still keep the credential on disk. Log the
+        # count only — never the fact text.
+        kept = [fact for fact in facts if not contains_credential(fact)]
+        if len(kept) < len(facts):
+            logger.info(
+                "Memory: dropped %d extracted fact(s) containing credentials",
+                len(facts) - len(kept),
+            )
+        facts = kept
+        if not facts:
+            return
+        provenance = {**provenance, "derived_from": "user"}
         # Provenance is per fact, not per exchange: a fact whose own text trips
         # the scanner is quarantined (stored for audit, filtered out of every
         # model-facing path), while clean facts stay recallable — otherwise
@@ -230,10 +279,15 @@ class MemoryService:
         for fact in facts:
             target = quarantined if self._flagged(self._scan(fact)) else clean
             target.append(fact)
-        stored = self._store.add_many_with_trust(clean, source="auto", trust=TRUST_AUTO)
+        stored = self._store.add_many_with_trust(
+            clean, source="auto", trust=TRUST_AUTO, provenance=provenance
+        )
         if quarantined:
             stored += self._store.add_many_with_trust(
-                quarantined, source="auto", trust=TRUST_UNTRUSTED
+                quarantined,
+                source="auto",
+                trust=TRUST_UNTRUSTED,
+                provenance=provenance,
             )
             logger.info(
                 "Memory: quarantined %d extracted fact(s) as untrusted",
@@ -314,8 +368,14 @@ def publish_completed_exchange(
     assistant_text: str = "",
     *,
     source: str = "",
+    conversation_id: str | None = None,
+    user_message_id: str | None = None,
 ) -> bool:
-    """Publish a completed chat exchange for lifecycle subscribers."""
+    """Publish a completed chat exchange for lifecycle subscribers.
+
+    *conversation_id* / *user_message_id* identify the durable transcript
+    rows the exchange came from, when the surface records one.
+    """
     if bus is None or not user_text or not user_text.strip():
         return False
     bus.publish(
@@ -324,6 +384,8 @@ def publish_completed_exchange(
             "user_text": user_text,
             "assistant_text": assistant_text or "",
             "source": source,
+            "conversation_id": conversation_id or "",
+            "user_message_id": user_message_id or "",
         },
     )
     return True
