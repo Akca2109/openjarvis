@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import click
 from rich.console import Console
@@ -18,6 +18,9 @@ from openjarvis.core.config import load_config
 from openjarvis.core.events import EventBus
 from openjarvis.core.types import Message, Role
 from openjarvis.memory import publish_completed_exchange
+
+if TYPE_CHECKING:
+    from openjarvis.conversations import ConversationRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,54 @@ def _read_input(prompt: str = "You> ") -> Optional[str]:
         return input(prompt)
     except (EOFError, KeyboardInterrupt):
         return None
+
+
+def _resume_conversation(
+    console: Console,
+    recorder: Optional["ConversationRecorder"],
+    conversation_id: Optional[str],
+) -> Optional[List[Message]]:
+    """Adopt a durable conversation and rebuild its model context.
+
+    Returns the prior turns to seed history with (empty when ``--resume``
+    finds nothing), or ``None`` after printing why the explicit resume
+    request cannot be honored. Messages never include transcript content.
+    """
+    from openjarvis.conversations import ConversationNotFound, build_resume_context
+
+    if recorder is None:
+        console.print(
+            "[red]Conversation history is disabled or unavailable; cannot resume.[/red]"
+        )
+        return None
+    try:
+        resumed = recorder.resume(conversation_id)
+    except ConversationNotFound:
+        console.print("[red]Conversation not found.[/red]")
+        return None
+    except Exception as exc:  # noqa: BLE001 — report class name only
+        logger.warning("Could not resume conversation (%s)", type(exc).__name__)
+        console.print(
+            "[red]Conversation history unavailable "
+            f"({_safe_rich_label(type(exc).__name__)}); cannot resume.[/red]"
+        )
+        return None
+    if resumed is None:
+        console.print("[dim]No previous conversation; starting new.[/dim]")
+        return []
+
+    context = build_resume_context(resumed.messages)
+    notes = []
+    if context.trimmed:
+        notes.append(f"{context.trimmed} trimmed")
+    if context.skipped:
+        notes.append(f"{context.skipped} skipped")
+    detail = f"; {', '.join(notes)}" if notes else ""
+    console.print(
+        f"[dim]Resumed conversation {_safe_rich_label(resumed.conversation_id)} "
+        f"({len(context.messages)} earlier messages{detail}).[/dim]"
+    )
+    return context.messages
 
 
 @click.command()
@@ -78,6 +129,20 @@ def _read_input(prompt: str = "You> ") -> Optional[str]:
     default=False,
     help="Enable voice I/O: mic input with silence detection + TTS response playback.",
 )
+@click.option(
+    "--resume",
+    "resume_latest",
+    is_flag=True,
+    default=False,
+    help="Continue your most recent CLI conversation.",
+)
+@click.option(
+    "--conversation",
+    "conversation_id",
+    default=None,
+    metavar="ID",
+    help="Continue the conversation with this id.",
+)
 @runtime_cli_options
 def chat(
     engine_key: str | None,
@@ -88,6 +153,8 @@ def chat(
     system_prompt: str | None,
     persona_name: str | None,
     voice_mode: bool,
+    resume_latest: bool,
+    conversation_id: str | None,
     num_ctx: int | None,
     num_gpu: int | None,
     skip_runtime_panel: bool,
@@ -109,7 +176,19 @@ def chat(
 
     Pass --voice to use microphone input (silence-detection) and hear responses
     read back via text-to-speech (kokoro local or OpenAI TTS).
+
+    Every chat starts a new conversation unless you pass --resume (your most
+    recent CLI conversation) or --conversation ID. Earlier turns of a resumed
+    conversation are sent to the model as context, up to a fixed budget.
     """
+    resume_requested = resume_latest or conversation_id is not None
+    if resume_latest and conversation_id is not None:
+        raise click.UsageError("--resume and --conversation are mutually exclusive")
+    if resume_requested and voice_mode:
+        raise click.UsageError(
+            "--resume and --conversation are not supported with --voice"
+        )
+
     console = Console(stderr=True)
 
     config = load_config()
@@ -354,10 +433,6 @@ def chat(
         )
         system_prompt = builder.build()
 
-    history: List[Message] = []
-    if system_prompt:
-        history.append(Message(role=Role.SYSTEM, content=system_prompt))
-
     # Durable local conversation history (conversations.db). Only real user
     # and completed assistant turns are recorded — never the system prompt,
     # persona, injected memory context, or slash commands. Voice chats are
@@ -375,6 +450,26 @@ def chat(
             metadata={"engine": engine_name},
             warn=lambda msg: console.print(f"[dim yellow]{escape(msg)}[/dim yellow]"),
         )
+
+    # An explicit resume is settled before the first model call; a request
+    # that cannot be honored exits instead of silently starting fresh.
+    resumed_history: List[Message] = []
+    if resume_requested:
+        loaded = _resume_conversation(console, conversation_recorder, conversation_id)
+        if loaded is None:
+            if conversation_recorder is not None:
+                conversation_recorder.close()
+            if memory_service is not None:
+                memory_service.stop()
+            sys.exit(1)
+        resumed_history = loaded
+
+    # Resumed turns follow the freshly built system prompt; memory context is
+    # injected per turn below and never becomes part of ``history``.
+    history: List[Message] = []
+    if system_prompt:
+        history.append(Message(role=Role.SYSTEM, content=system_prompt))
+    history.extend(resumed_history)
 
     # REPL loop. The recorder is closed however the loop exits; memory
     # service shutdown below keeps its existing (non-finally) behavior.

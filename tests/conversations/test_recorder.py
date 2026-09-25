@@ -165,3 +165,96 @@ class TestFailSoft:
         with patch.object(store, "ensure_owner", side_effect=OSError("x")):
             assert rec.record_user("hello") is None
         assert rec.disabled
+
+
+class TestResume:
+    def _seed(self, store, *, origin="cli", user_id=OWNER_USER_ID, turns=1):
+        store.ensure_owner()
+        conv = store.create_conversation(origin=origin, user_id=user_id)
+        for i in range(turns):
+            store.append_message(conv.conversation_id, "user", f"u{i}", surface="cli")
+            store.append_message(
+                conv.conversation_id, "assistant", f"a{i}", surface="cli"
+            )
+        return conv
+
+    def test_latest_adopts_newest_owner_cli_conversation(self, store):
+        self._seed(store)
+        newest = self._seed(store)
+        self._seed(store, origin="channel:telegram")
+        self._seed(store, user_id=None)
+        rec = _recorder(store)
+        resumed = rec.resume()
+        assert resumed is not None
+        assert resumed.conversation_id == newest.conversation_id
+        assert rec.conversation_id == newest.conversation_id
+        assert [m.content for m in resumed.messages] == ["u0", "a0"]
+
+    def test_latest_returns_none_when_nothing_matches(self, store):
+        self._seed(store, origin="channel:telegram")
+        rec = _recorder(store)
+        assert rec.resume() is None
+        assert rec.conversation_id is None
+
+    def test_resume_writes_nothing_and_new_turns_append(self, store):
+        conv = self._seed(store)
+        rec = _recorder(store, model="m2")
+        rec.resume(conv.conversation_id)
+        assert len(store.get_messages(conv.conversation_id)) == 2
+        rec.record_user("again")
+        rec.record_assistant("reply")
+        messages = store.get_messages(conv.conversation_id)
+        assert [m.content for m in messages] == ["u0", "a0", "again", "reply"]
+        assert messages[-1].model == "m2"
+        assert len(store.list_conversations()) == 1
+
+    def test_resume_respects_message_limit(self, store):
+        conv = self._seed(store, turns=5)
+        resumed = _recorder(store).resume(conv.conversation_id, max_messages=3)
+        assert [m.content for m in resumed.messages] == ["a3", "u4", "a4"]
+
+    @pytest.mark.parametrize("kind", ["missing", "unmapped", "foreign"])
+    def test_inaccessible_conversation_is_not_found(self, store, kind):
+        from openjarvis.conversations import ConversationNotFound
+
+        if kind == "missing":
+            conversation_id = "does-not-exist"
+        elif kind == "unmapped":
+            conversation_id = self._seed(store, user_id=None).conversation_id
+        else:
+            store._conn.execute(
+                "INSERT INTO users (user_id, display_name, created_at)"
+                " VALUES ('someone-else', '', 0)"
+            )
+            conversation_id = self._seed(store, user_id="someone-else").conversation_id
+        rec = _recorder(store)
+        with pytest.raises(ConversationNotFound) as excinfo:
+            rec.resume(conversation_id)
+        assert str(excinfo.value) == "conversation not found"
+        assert conversation_id not in str(excinfo.value)
+        assert rec.conversation_id is None
+
+    def test_disabled_recorder_raises_store_error(self, store):
+        from openjarvis.conversations import ConversationStoreError
+
+        rec = _recorder(store)
+        rec.close()
+        with pytest.raises(ConversationStoreError):
+            rec.resume()
+
+    def test_store_error_propagates_and_does_not_adopt(self, store):
+        conv = self._seed(store)
+        rec = _recorder(store)
+        with patch.object(store, "get_messages", side_effect=OSError("io")):
+            with pytest.raises(OSError):
+                rec.resume(conv.conversation_id)
+        assert rec.conversation_id is None
+
+    def test_reset_after_resume_starts_new_conversation(self, store):
+        conv = self._seed(store)
+        rec = _recorder(store)
+        rec.resume(conv.conversation_id)
+        rec.reset()
+        rec.record_user("fresh")
+        assert rec.conversation_id != conv.conversation_id
+        assert len(store.get_messages(conv.conversation_id)) == 2

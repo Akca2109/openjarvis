@@ -248,6 +248,23 @@ class TestConversations:
         with pytest.raises(ValueError):
             store.list_conversations(limit=0)
 
+    def test_list_filters_by_origin_and_owner(self, store):
+        owner = store.ensure_owner()
+        cli = store.create_conversation(origin="cli", user_id=owner)
+        channel = store.create_conversation(origin="channel:telegram", user_id=owner)
+        unowned_cli = store.create_conversation(origin="cli", user_id=None)
+        store.append_message(
+            channel.conversation_id, "user", "newest", surface="t", created_at=9e9
+        )
+        by_origin = store.list_conversations(origin="cli")
+        assert {c.conversation_id for c in by_origin} == {
+            cli.conversation_id,
+            unowned_cli.conversation_id,
+        }
+        both = store.list_conversations(user_id=owner, origin="cli")
+        assert [c.conversation_id for c in both] == [cli.conversation_id]
+        assert store.list_conversations(user_id=owner, origin="nope") == []
+
     def test_resolve_channel_thread_is_idempotent(self, store):
         first = store.resolve_channel_thread("telegram", "chat-42", user_id=None)
         again = store.resolve_channel_thread(

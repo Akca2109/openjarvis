@@ -4,7 +4,9 @@ A surface (currently only ``jarvis chat``) owns one recorder per chat. The
 recorder creates the durable conversation lazily on the first user message,
 appends real user turns and completed assistant turns, and never lets a
 persistence problem interrupt the chat: the first failure is reported once
-and the recorder disables itself for the rest of that chat.
+and the recorder disables itself for the rest of that chat. A recorder can
+instead :meth:`~ConversationRecorder.resume` an existing owner conversation,
+after which new turns append to it; loaded rows are never rewritten.
 
 Nothing here logs or reports transcript content — only exception class names.
 """
@@ -13,13 +15,30 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Callable, Mapping, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, List, Mapping, Optional
 
-from openjarvis.conversations.store import ConversationStore
+from openjarvis.conversations.history import RESUME_MAX_MESSAGES
+from openjarvis.conversations.store import (
+    OWNER_USER_ID,
+    ConversationMessage,
+    ConversationNotFound,
+    ConversationStore,
+    ConversationStoreError,
+)
 
 logger = logging.getLogger(__name__)
 
 WarnCallback = Callable[[str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ResumedConversation:
+    """An existing conversation adopted by a recorder."""
+
+    conversation_id: str
+    # The newest durable messages, oldest first, exactly as stored.
+    messages: List[ConversationMessage]
 
 
 class ConversationRecorder:
@@ -153,6 +172,45 @@ class ConversationRecorder:
             return None
         return message.message_id
 
+    def resume(
+        self,
+        conversation_id: Optional[str] = None,
+        *,
+        max_messages: int = RESUME_MAX_MESSAGES,
+    ) -> Optional[ResumedConversation]:
+        """Adopt an existing owner conversation so new turns append to it.
+
+        With ``conversation_id=None``, adopts the owner's most recently
+        updated conversation from this recorder's origin, or returns ``None``
+        when there is none. An explicit id that is missing or not owned by
+        the canonical owner raises :class:`ConversationNotFound`.
+
+        Unlike the ``record_*`` methods this is an explicit user request, so
+        failures raise instead of failing soft: store errors propagate and
+        a disabled recorder raises :class:`ConversationStoreError`. Nothing is
+        written; loaded messages are returned, never re-appended.
+        """
+        if self._disabled or self._store is None:
+            raise ConversationStoreError("conversation history unavailable")
+        if conversation_id is None:
+            latest = self._store.list_conversations(
+                user_id=OWNER_USER_ID, origin=self._origin, limit=1
+            )
+            if not latest:
+                return None
+            conversation = latest[0]
+        else:
+            conversation = self._store.get_conversation(conversation_id)
+            if conversation is None or conversation.user_id != OWNER_USER_ID:
+                raise ConversationNotFound("conversation not found")
+        messages = self._store.get_messages(
+            conversation.conversation_id, limit=max_messages
+        )
+        self._conversation_id = conversation.conversation_id
+        return ResumedConversation(
+            conversation_id=conversation.conversation_id, messages=messages
+        )
+
     def reset(self) -> None:
         """Start a new durable conversation on the next user turn."""
         self._conversation_id = None
@@ -191,4 +249,4 @@ def _notify(warn: Optional[WarnCallback], message: str) -> None:
         logger.debug("Conversation warning callback failed", exc_info=True)
 
 
-__all__ = ["ConversationRecorder"]
+__all__ = ["ConversationRecorder", "ResumedConversation"]

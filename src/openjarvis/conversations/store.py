@@ -67,6 +67,14 @@ class ConversationStoreError(RuntimeError):
     """Raised when the conversation database cannot be used safely."""
 
 
+class ConversationNotFound(LookupError):
+    """Raised when a requested conversation is missing or not accessible.
+
+    Missing and foreign conversations deliberately raise the same error so a
+    caller cannot learn whether another user's conversation exists.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Conversation:
     """A durable conversation thread."""
@@ -534,16 +542,29 @@ class ConversationStore:
 
     @_locked
     def list_conversations(
-        self, *, user_id: Optional[str] = None, limit: int = 50
+        self,
+        *,
+        user_id: Optional[str] = None,
+        origin: Optional[str] = None,
+        limit: int = 50,
     ) -> List[Conversation]:
-        """List conversations, most recently updated first."""
+        """List conversations, most recently updated first.
+
+        ``user_id`` and ``origin`` each narrow the result when given.
+        """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
         sql = f"SELECT {_CONVERSATION_COLUMNS} FROM conversations"
+        clauses: list = []
         params: list = []
         if user_id is not None:
-            sql += " WHERE user_id = ?"
+            clauses.append("user_id = ?")
             params.append(user_id)
+        if origin is not None:
+            clauses.append("origin = ?")
+            params.append(origin)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY updated_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         rows = self._conn.execute(sql, params).fetchall()
@@ -744,6 +765,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "Conversation",
     "ConversationMessage",
+    "ConversationNotFound",
     "ConversationStore",
     "ConversationStoreError",
 ]

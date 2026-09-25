@@ -84,6 +84,8 @@ class TestChatCommand:
         assert "--agent" in result.output
         assert "--tools" in result.output
         assert "--system" in result.output
+        assert "--resume" in result.output
+        assert "--conversation" in result.output
 
     def test_slash_commands_listed(self) -> None:
         result = CliRunner().invoke(chat, ["--help"])
