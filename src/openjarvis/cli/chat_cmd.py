@@ -42,6 +42,22 @@ def _read_input(prompt: str = "You> ") -> Optional[str]:
         return None
 
 
+def _bound_working_history(history: List[Message]) -> List[Message]:
+    """Bound the live model context with the shared resume policy.
+
+    Leading system messages (the fresh system/persona prompt) are kept as-is;
+    only the user/assistant turns after them are normalized. A trailing user
+    turn whose generation failed is dropped so it cannot poison the next
+    turn. Durable history in ``conversations.db`` is never touched.
+    """
+    from openjarvis.conversations import normalize_context_messages
+
+    head = 0
+    while head < len(history) and history[head].role == Role.SYSTEM:
+        head += 1
+    return history[:head] + normalize_context_messages(history[head:])
+
+
 def _resume_conversation(
     console: Console,
     recorder: Optional["ConversationRecorder"],
@@ -181,7 +197,8 @@ def chat(
 
     Every chat starts a new conversation unless you pass --resume (your most
     recent CLI conversation) or --conversation ID. Earlier turns of a resumed
-    conversation are sent to the model as context, up to a fixed budget.
+    conversation are sent to the model as context, up to a fixed budget; the
+    same budget bounds a long-running chat. Full history stays on disk.
     """
     resume_requested = resume_latest or conversation_id is not None
     if resume_latest and conversation_id is not None:
@@ -534,15 +551,29 @@ def chat(
                 )
                 continue
             elif cmd == "/history":
-                if not history:
+                # The full durable transcript (including turns trimmed from
+                # the model context and failed user turns) when available;
+                # otherwise the live working context.
+                transcript = (
+                    conversation_recorder.transcript()
+                    if conversation_recorder is not None
+                    else None
+                )
+                if transcript is not None:
+                    entries = [(row.role, row.content) for row in transcript]
+                else:
+                    entries = [
+                        (getattr(msg.role, "value", msg.role), msg.content)
+                        for msg in history
+                    ]
+                if not entries:
                     console.print("[dim]No history yet.[/dim]")
                 else:
-                    for msg in history:
-                        role_str = (
-                            msg.role if isinstance(msg.role, str) else msg.role.value
+                    for role_str, text in entries:
+                        role = safe_rich_text(str(role_str).upper())
+                        preview = safe_rich_text(
+                            str(text or "")[:200], single_line=False
                         )
-                        role = role_str.upper()
-                        preview = safe_rich_text(msg.content[:200], single_line=False)
                         console.print(f"[bold]{role}:[/bold] {preview}")
                 continue
 
@@ -636,6 +667,10 @@ def chat(
                 console.print("\n[dim]Generation interrupted.[/dim]")
             except Exception as exc:
                 console.print(f"\n[red]Error: {safe_rich_text(exc)}[/red]\n")
+
+            # Success or failure, the next turn starts from bounded, valid
+            # context: completed turns only, within the resume budget.
+            history = _bound_working_history(history)
 
     finally:
         if conversation_recorder is not None:

@@ -258,3 +258,44 @@ class TestResume:
         rec.record_user("fresh")
         assert rec.conversation_id != conv.conversation_id
         assert len(store.get_messages(conv.conversation_id)) == 2
+
+
+class TestTranscript:
+    def test_empty_before_first_turn(self, store):
+        assert _recorder(store).transcript() == []
+
+    def test_returns_every_message_of_current_conversation(self, store):
+        rec = _recorder(store)
+        for i in range(30):
+            rec.record_user(f"u{i}")
+            rec.record_assistant(f"a{i}")
+        rec.record_user("failed")
+        contents = [m.content for m in rec.transcript()]
+        assert len(contents) == 61
+        assert contents[:2] == ["u0", "a0"] and contents[-1] == "failed"
+
+    def test_reset_starts_empty(self, store):
+        rec = _recorder(store)
+        rec.record_user("hi")
+        rec.reset()
+        assert rec.transcript() == []
+
+    def test_none_when_closed_or_disabled(self, store):
+        rec = _recorder(store)
+        rec.record_user("hi")
+        with patch.object(store, "append_message", side_effect=OSError("x")):
+            rec.record_user("again")
+        assert rec.disabled
+        assert rec.transcript() is None
+        other = _recorder(ConversationStore(":memory:"))
+        other.close()
+        assert other.transcript() is None
+
+    def test_read_failure_returns_none_and_keeps_recording(self, store):
+        rec = _recorder(store)
+        rec.record_user("hi")
+        with patch.object(store, "get_messages", side_effect=OSError("x")):
+            assert rec.transcript() is None
+        assert not rec.disabled
+        assert rec.record_assistant("yo") is not None
+        assert [m.content for m in rec.transcript()] == ["hi", "yo"]

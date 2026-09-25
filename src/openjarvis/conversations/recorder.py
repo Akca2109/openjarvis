@@ -211,6 +211,24 @@ class ConversationRecorder:
             conversation_id=conversation.conversation_id, messages=messages
         )
 
+    def transcript(self) -> Optional[List[ConversationMessage]]:
+        """Return every durable message of the current conversation.
+
+        Returns ``[]`` before the first turn is recorded, and ``None`` when
+        durable history is unavailable (disabled, closed, or the read
+        failed) so the caller can fall back to its own view. A failed read
+        does not disable recording.
+        """
+        if self._disabled or self._store is None:
+            return None
+        if self._conversation_id is None:
+            return []
+        try:
+            return self._store.get_messages(self._conversation_id)
+        except Exception as exc:  # noqa: BLE001 — history must never break chat
+            logger.debug("Conversation transcript read failed: %s", type(exc).__name__)
+            return None
+
     def reset(self) -> None:
         """Start a new durable conversation on the next user turn."""
         self._conversation_id = None

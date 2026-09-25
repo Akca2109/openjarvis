@@ -5,12 +5,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from openjarvis.conversations import (
+    CONTEXT_MAX_MESSAGES,
+    CONTEXT_MAX_TOKENS,
     RESUME_MAX_MESSAGES,
     RESUME_MAX_TOKENS,
     ConversationStore,
     build_resume_context,
+    normalize_context_messages,
 )
-from openjarvis.core.types import Role
+from openjarvis.core.types import Message, Role
 from openjarvis.engine._base import estimate_prompt_tokens
 
 
@@ -88,12 +91,33 @@ def test_conversation_of_only_unanswered_user_turns_is_empty():
     assert ctx.trimmed == 1
 
 
-def test_answered_earlier_failure_is_preserved_mid_conversation():
-    # A failed turn followed by a successful one stays faithful to history.
+def test_unanswered_user_turn_is_dropped_mid_conversation():
+    # Only the most recent of consecutive user turns got the reply; the
+    # earlier failed one is left out of model context (it stays on disk).
+    ctx = build_resume_context(
+        [
+            _row("user", "u1"),
+            _row("assistant", "a1"),
+            _row("user", "failed-1"),
+            _row("user", "failed-2"),
+            _row("user", "u2"),
+            _row("assistant", "a2"),
+        ]
+    )
+    assert _pairs(ctx) == [
+        (Role.USER, "u1"),
+        (Role.ASSISTANT, "a1"),
+        (Role.USER, "u2"),
+        (Role.ASSISTANT, "a2"),
+    ]
+    assert ctx.trimmed == 2
+
+
+def test_leading_unanswered_user_turn_is_dropped():
     ctx = build_resume_context(
         [_row("user", "failed"), _row("user", "u2"), _row("assistant", "a2")]
     )
-    assert [m.content for m in ctx.messages] == ["failed", "u2", "a2"]
+    assert [m.content for m in ctx.messages] == ["u2", "a2"]
 
 
 def test_leading_assistant_message_is_dropped():
@@ -138,3 +162,67 @@ def test_works_with_real_store_rows():
         store.append_message(conv.conversation_id, "assistant", "yo", surface="cli")
         ctx = build_resume_context(store.get_messages(conv.conversation_id))
     assert _pairs(ctx) == [(Role.USER, "hi"), (Role.ASSISTANT, "yo")]
+
+
+# ---------------------------------------------------------------------------
+# Shared working-context policy (resume + live chat)
+# ---------------------------------------------------------------------------
+
+
+def _msg(role, content):
+    return Message(role=role, content=content)
+
+
+def test_context_budget_constants_are_shared_with_resume():
+    assert CONTEXT_MAX_MESSAGES == RESUME_MAX_MESSAGES == 40
+    assert CONTEXT_MAX_TOKENS == RESUME_MAX_TOKENS == 4096
+
+
+def test_normalize_caps_message_count_and_starts_on_user():
+    messages = []
+    for i in range(30):
+        messages += [_msg(Role.USER, f"u{i}"), _msg(Role.ASSISTANT, f"a{i}")]
+    kept = normalize_context_messages(messages)
+    assert len(kept) == CONTEXT_MAX_MESSAGES
+    assert kept[0].content == "u10" and kept[-1].content == "a29"
+    kept = normalize_context_messages(messages, max_messages=5)
+    # a27 would lead after the cap, so it is dropped too.
+    assert [m.content for m in kept] == ["u28", "a28", "u29", "a29"]
+
+
+def test_normalize_drops_trailing_unanswered_users_and_keeps_input():
+    messages = [
+        _msg(Role.USER, "u1"),
+        _msg(Role.ASSISTANT, "a1"),
+        _msg(Role.USER, "failed-1"),
+        _msg(Role.USER, "failed-2"),
+    ]
+    snapshot = list(messages)
+    assert [m.content for m in normalize_context_messages(messages)] == ["u1", "a1"]
+    assert messages == snapshot
+
+
+def test_normalize_applies_token_budget():
+    big = "word " * 400
+    messages = []
+    for i in range(10):
+        messages += [_msg(Role.USER, f"u{i} {big}"), _msg(Role.ASSISTANT, f"a{i}")]
+    kept = normalize_context_messages(messages, max_tokens=2000)
+    assert estimate_prompt_tokens(kept) <= 2000
+    assert kept[0].role == Role.USER and kept[-1].role == Role.ASSISTANT
+
+
+def test_resume_context_matches_shared_policy():
+    rows = []
+    for i in range(30):
+        rows += [_row("user", f"u{i}"), _row("assistant", f"a{i}")]
+    rows.append(_row("user", "failed"))
+    ctx = build_resume_context(rows)
+    expected = normalize_context_messages(
+        [
+            _msg(Role.USER if r.role == "user" else Role.ASSISTANT, r.content)
+            for r in rows
+        ]
+    )
+    assert _pairs(ctx) == [(m.role, m.content) for m in expected]
+    assert ctx.trimmed == len(rows) - len(expected)
