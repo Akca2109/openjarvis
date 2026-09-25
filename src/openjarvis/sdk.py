@@ -477,6 +477,8 @@ class Jarvis:
                 self._engine,
                 model_name,
                 channel=channel,
+                # Same memory files as the SystemPromptBuilder below.
+                memory_files_config=self._config.memory_files,
             )
 
         agent_kwargs: Dict[str, Any] = {

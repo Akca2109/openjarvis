@@ -147,6 +147,7 @@ def _skill_tool_names(mgr: SkillManager, skill_name: str) -> list[str]:
 def run(skill_name: str, arg: tuple):
     """Execute a stepped skill using configured security and tool permissions."""
     import openjarvis.tools  # noqa: F401
+    from openjarvis.cli._confirm import confirm_tool_call
     from openjarvis.cli._tool_names import resolve_tool_names
     from openjarvis.cli.ask import _build_tools
     from openjarvis.core.registry import ToolRegistry
@@ -175,7 +176,7 @@ def run(skill_name: str, arg: tuple):
             context[k.strip()] = v.strip()
     sec = setup_security(cfg, None, bus)
     try:
-        tools = _build_tools(names, cfg, None, "")
+        tools = _build_tools(names, cfg, None, "", memory_files_config=cfg.memory_files)
         mgr.set_tool_executor(
             ToolExecutor(
                 tools,
@@ -184,7 +185,8 @@ def run(skill_name: str, arg: tuple):
                 rate_limiter=sec.rate_limiter,
                 agent_id="skill:cli",
                 interactive=True,
-                confirm_callback=lambda prompt: click.confirm(prompt, default=False),
+                # Sanitized rendering, default No, EOF/Ctrl-C deny.
+                confirm_callback=confirm_tool_call,
             )
         )
         result = mgr.execute(skill_name, context)

@@ -153,7 +153,7 @@ class TestCapabilityPolicyReachesExecutor:
         repl = ReplTool()
         config = JarvisConfig()
         config.agent.context_from_memory = False
-        monkeypatch.setattr(ask_module, "_build_tools", lambda *args: [repl])
+        monkeypatch.setattr(ask_module, "_build_tools", lambda *args, **kwargs: [repl])
         monkeypatch.setattr(
             "openjarvis.mcp.loader.load_mcp_tools_from_config",
             lambda *args, **kwargs: ([], []),

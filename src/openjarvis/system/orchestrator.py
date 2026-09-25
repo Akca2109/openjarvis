@@ -319,9 +319,11 @@ class QueryOrchestrator:
 
     def _build_tools(self, tool_names: List[str]) -> List[BaseTool]:
         """Build tool instances from tool names."""
+        from openjarvis.agents.tool_resolver import memory_file_tool_kwargs
         from openjarvis.core.registry import ToolRegistry
 
         s = self._system
+        memory_files = getattr(s.config, "memory_files", None)
         tools: List[BaseTool] = []
         for name in tool_names:
             try:
@@ -334,7 +336,11 @@ class QueryOrchestrator:
 
                     tools.append(LLMTool(s.engine, model=s.model))
                 elif ToolRegistry.contains(name):
-                    tools.append(ToolRegistry.create(name))
+                    tools.append(
+                        ToolRegistry.create(
+                            name, **memory_file_tool_kwargs(name, memory_files)
+                        )
+                    )
             except Exception as exc:
                 logger.warning("Failed to build tool %r: %s", name, exc)
         return tools

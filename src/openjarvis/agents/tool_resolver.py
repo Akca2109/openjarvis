@@ -30,6 +30,7 @@ _MEMORY_TOOLS = frozenset(
     {"retrieval", "memory_store", "memory_search", "memory_index", "memory_retrieve"}
 )
 _CHANNEL_TOOLS = frozenset({"channel_send", "channel_list", "channel_status"})
+_MEMORY_FILE_TOOLS = frozenset({"memory_manage", "user_profile_manage"})
 
 
 class _SpecOverrideTool:
@@ -227,6 +228,29 @@ def ensure_registries_populated() -> None:
                     pass
 
 
+def memory_file_tool_kwargs(name: str, memory_files_config: Any) -> dict[str, str]:
+    """Constructor kwargs binding a memory-file tool to the prompt's files.
+
+    ``memory_manage`` and ``user_profile_manage`` edit files that the system
+    prompt injects, so they must target the same effective (persona-aware)
+    paths the surface's ``SystemPromptBuilder`` reads. With the persona
+    ``none`` opt-out the paths are empty and the tools report themselves
+    disabled rather than falling back to the default home files. Returns
+    ``{}`` for other tools, or when no ``MemoryFilesConfig`` is given (the
+    prompt builder then uses the default files, which the tools also use).
+    """
+
+    if name not in _MEMORY_FILE_TOOLS:
+        return {}
+    from openjarvis.core.config import MemoryFilesConfig
+
+    if not isinstance(memory_files_config, MemoryFilesConfig):
+        return {}
+    from openjarvis.prompt.builder import memory_tool_kwargs
+
+    return memory_tool_kwargs(memory_files_config)[name]
+
+
 def instantiate_registered_tool(
     tool_cls: Any,
     name: str,
@@ -235,9 +259,16 @@ def instantiate_registered_tool(
     model: str,
     memory_backend: Any = None,
     channel_backend: Any = None,
+    memory_files_config: Any = None,
 ) -> Any:
-    """Instantiate a registry tool with its runtime dependencies."""
+    """Instantiate a registry tool with its runtime dependencies.
 
+    ``memory_files_config`` is the ``MemoryFilesConfig`` the surface builds
+    its system prompt from; see :func:`memory_file_tool_kwargs`.
+    """
+
+    if name in _MEMORY_FILE_TOOLS:
+        return tool_cls(**memory_file_tool_kwargs(name, memory_files_config))
     if name in _MEMORY_TOOLS:
         if memory_backend is None:
             logger.warning(
@@ -319,6 +350,7 @@ def resolve_agent_tools(
     mcp_tools: Iterable[Any] = (),
     mcp_clients: Iterable[Any] = (),
     knowledge_db_path: str | Path | None = None,
+    memory_files_config: Any = None,
 ) -> ResolvedAgentTools:
     """Resolve the effective live toolkit for a managed agent.
 
@@ -326,6 +358,7 @@ def resolve_agent_tools(
     over configured registry tools, which take precedence over MCP adapters.
     ``config["mcp_tools"] = false`` excludes MCP adapters from this agent;
     process-wide runtimes may still own connections used by other agents.
+    ``memory_files_config`` must be the one the agent's prompt is built from.
     """
 
     ensure_registries_populated()
@@ -397,6 +430,7 @@ def resolve_agent_tools(
                             model=model,
                             memory_backend=memory_backend,
                             channel_backend=channel_backend,
+                            memory_files_config=memory_files_config,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -444,6 +478,7 @@ def resolve_agent_tools(
                         model=model,
                         memory_backend=memory_backend,
                         channel_backend=channel_backend,
+                        memory_files_config=memory_files_config,
                     )
                 )
             except Exception as exc:
@@ -497,6 +532,7 @@ __all__ = [
     "build_deep_research_tools",
     "ensure_registries_populated",
     "instantiate_registered_tool",
+    "memory_file_tool_kwargs",
     "resolve_agent_tools",
     "resolve_tool_specs",
 ]

@@ -169,9 +169,13 @@ class AgentExecutor:
         # ephemeral turn instead of silently ignoring ``tools``.
         import openjarvis.tools  # noqa: F401
         from openjarvis.agents.orchestrator import OrchestratorAgent
+        from openjarvis.agents.tool_resolver import memory_file_tool_kwargs
         from openjarvis.core.registry import ToolRegistry
         from openjarvis.tools._stubs import BaseTool
 
+        memory_files = getattr(
+            getattr(self._system, "config", None), "memory_files", None
+        )
         instances = []
         for name in tools:
             if not ToolRegistry.contains(name):
@@ -180,7 +184,9 @@ class AgentExecutor:
             if isinstance(registered, BaseTool):
                 instances.append(registered)
             elif isinstance(registered, type) and issubclass(registered, BaseTool):
-                instances.append(registered())
+                instances.append(
+                    registered(**memory_file_tool_kwargs(name, memory_files))
+                )
 
         execution_cls = (
             agent_cls
@@ -461,6 +467,10 @@ class AgentExecutor:
             mcp_tools=mcp_tools,
             mcp_clients=mcp_clients,
             knowledge_db_path=getattr(self._system, "knowledge_db_path", None),
+            # Same memory files as the prompt_builder wired below.
+            memory_files_config=getattr(
+                getattr(self._system, "config", None), "memory_files", None
+            ),
         )
         self._toolkit_local.current = resolved_toolkit
         tool_instances = resolved_toolkit.instances

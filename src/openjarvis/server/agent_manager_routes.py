@@ -598,6 +598,7 @@ def _instantiate_managed_tool(
         channel_backend = getattr(app_state, "channel_backend", None) or getattr(
             app_state, "channel_bridge", None
         )
+    app_config = getattr(app_state, "config", None) if app_state is not None else None
     return instantiate_registered_tool(
         tool_cls,
         name,
@@ -605,6 +606,7 @@ def _instantiate_managed_tool(
         model=model,
         memory_backend=memory_backend,
         channel_backend=channel_backend,
+        memory_files_config=getattr(app_config, "memory_files", None),
     )
 
 
@@ -959,6 +961,8 @@ async def _stream_managed_agent(
         mcp_tools=mcp_adapters.values(),
         mcp_clients=mcp_clients,
         knowledge_db_path=getattr(app_state, "knowledge_db_path", None),
+        # Same memory files as _build_managed_system_prompt above.
+        memory_files_config=getattr(app_config, "memory_files", None),
     )
 
     # Load prior conversation context (DESC order, reverse for chronological).

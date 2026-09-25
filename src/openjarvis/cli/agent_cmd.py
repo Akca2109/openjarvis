@@ -839,9 +839,11 @@ def ask(agent_id, message, auto_approve):
     if auto_approve:
         executor._confirm_callback = lambda _prompt: True
     else:
-        executor._confirm_callback = lambda prompt: click.confirm(
-            f"\n{prompt}", default=False
-        )
+        from openjarvis.cli._confirm import confirm_tool_call
+
+        # The prompt embeds model-chosen tool arguments: render it sanitized,
+        # default to No, and deny on EOF/Ctrl-C.
+        executor._confirm_callback = confirm_tool_call
     # Run the tick with a live trace rather than blocking in silence — the
     # message we just queued is consumed as this tick's input, so the user
     # sees the agent's searches/tool calls instead of an apparent hang.

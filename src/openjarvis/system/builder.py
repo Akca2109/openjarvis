@@ -500,7 +500,11 @@ class SystemBuilder:
 
         if tool_names:
             all_tools = {t.spec.name: t for t in internal_server.get_tools()}
-            tools = [all_tools[n] for n in tool_names if n in all_tools]
+            tools = [
+                self._bind_memory_files(all_tools[n], config)
+                for n in tool_names
+                if n in all_tools
+            ]
         else:
             tools = []
 
@@ -530,6 +534,21 @@ class SystemBuilder:
                 logger.warning("Failed to parse MCP server config: %s", exc)
 
         return tools
+
+    @staticmethod
+    def _bind_memory_files(tool, config):
+        """Rebuild a memory-file tool against ``config.memory_files``.
+
+        MCPServer auto-discovery constructs every tool with default arguments,
+        which would point ``memory_manage``/``user_profile_manage`` at the
+        default home files even under a persona or custom paths.
+        """
+        from openjarvis.agents.tool_resolver import memory_file_tool_kwargs
+
+        kwargs = memory_file_tool_kwargs(
+            tool.spec.name, getattr(config, "memory_files", None)
+        )
+        return type(tool)(**kwargs) if kwargs else tool
 
     @staticmethod
     def _inject_tool_deps(tool, engine, model, memory_backend, channel_backend):

@@ -338,6 +338,9 @@ def serve(
                     if sec.rate_limiter is not None:
                         agent_kwargs["rate_limiter"] = sec.rate_limiter
                     import openjarvis.tools  # noqa: F401  # trigger registration
+                    from openjarvis.agents.tool_resolver import (
+                        memory_file_tool_kwargs,
+                    )
                     from openjarvis.core.registry import ToolRegistry
                     from openjarvis.tools._stubs import BaseTool
 
@@ -351,7 +354,12 @@ def serve(
                         if isinstance(tool_cls, type) and issubclass(
                             tool_cls, BaseTool
                         ):
-                            tools.append(tool_cls())
+                            # Same memory files as the prompt_builder below.
+                            tools.append(
+                                tool_cls(
+                                    **memory_file_tool_kwargs(name, config.memory_files)
+                                )
+                            )
                         elif isinstance(tool_cls, BaseTool):
                             tools.append(tool_cls)
 
@@ -466,6 +474,9 @@ def serve(
                     _ch_cls = AgentRegistry.get(channel_agent)
                     if getattr(_ch_cls, "accepts_tools", False):
                         import openjarvis.tools
+                        from openjarvis.agents.tool_resolver import (
+                            memory_file_tool_kwargs,
+                        )
                         from openjarvis.core.registry import ToolRegistry
                         from openjarvis.tools._stubs import BaseTool
 
@@ -476,7 +487,13 @@ def serve(
                                 continue
                             _tcls = ToolRegistry.get(_tname)
                             if isinstance(_tcls, type) and issubclass(_tcls, BaseTool):
-                                _channel_tools.append(_tcls())
+                                _channel_tools.append(
+                                    _tcls(
+                                        **memory_file_tool_kwargs(
+                                            _tname, config.memory_files
+                                        )
+                                    )
+                                )
                             elif isinstance(_tcls, BaseTool):
                                 _channel_tools.append(_tcls)
 

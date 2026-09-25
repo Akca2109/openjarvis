@@ -307,8 +307,10 @@ def _build_tools(
     """Instantiate tool objects from names.
 
     ``memory_files_config`` is the effective (persona-aware) memory-file
-    config the system prompt is built from; when given, ``memory_manage`` and
-    ``user_profile_manage`` edit exactly those files.
+    config the system prompt is built from; ``memory_manage`` and
+    ``user_profile_manage`` edit exactly those files. It defaults to
+    ``config.memory_files`` — the files every prompt builder reads when no
+    override (such as ``--persona``) applies.
 
     ``channel`` is an optional :class:`BaseChannel` used by ``channel_*``
     tools. Threading it through here mirrors how memory backends are
@@ -320,13 +322,11 @@ def _build_tools(
     provided — these are the failure modes that silently cascade into
     hallucinated or dropped replies downstream.
     """
+    from openjarvis.agents.tool_resolver import memory_file_tool_kwargs
     from openjarvis.core.registry import ToolRegistry
 
-    memory_tools: dict = {}
-    if memory_files_config is not None:
-        from openjarvis.prompt.builder import memory_tool_kwargs
-
-        memory_tools = memory_tool_kwargs(memory_files_config)
+    if memory_files_config is None:
+        memory_files_config = getattr(config, "memory_files", None)
 
     tools = []
     for name in tool_names:
@@ -358,8 +358,8 @@ def _build_tools(
                     name,
                 )
             tools.append(tool_cls(channel=channel))
-        elif name in memory_tools:
-            tools.append(tool_cls(**memory_tools[name]))
+        elif name in ("memory_manage", "user_profile_manage"):
+            tools.append(tool_cls(**memory_file_tool_kwargs(name, memory_files_config)))
         elif name == "llm":
             tools.append(tool_cls(engine=engine, model=model_name))
         elif name == "file_read":
