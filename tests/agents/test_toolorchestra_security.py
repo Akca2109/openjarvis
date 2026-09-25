@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import openjarvis.agents.hybrid.toolorchestra as toolorchestra_module
 from openjarvis.agents.hybrid.toolorchestra import ToolOrchestraAgent
@@ -46,6 +46,7 @@ def _assert_denied(agent, bus, capability):
             "agent_id": "tool-runtime",
             "capability": capability,
             "tool": "hybrid_agent_run",
+            "tool_call_id": ANY,
         }
         for event in bus.history
     )

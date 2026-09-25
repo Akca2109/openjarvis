@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 import sys
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import click
 from rich.console import Console
@@ -620,6 +620,7 @@ def chat(
                     logger.debug("Failed to inject memory context", exc_info=True)
 
             # Generate response even when optional memory context is unavailable.
+            tool_results: List[Any] = []
             try:
                 if agent is not None:
                     from openjarvis.agents._stubs import AgentContext
@@ -636,6 +637,7 @@ def chat(
                         if hasattr(response, "content")
                         else str(response)
                     )
+                    tool_results = list(getattr(response, "tool_results", None) or [])
                 else:
                     result = engine.generate(
                         generation_history,
@@ -657,7 +659,13 @@ def chat(
                     speak(content, console, voice_session)
 
                 if conversation_recorder is not None:
-                    conversation_recorder.record_assistant(content)
+                    # Safe tool-use provenance on the final assistant row only:
+                    # names, outcomes and call IDs — never arguments or output.
+                    from openjarvis.conversations import tool_provenance_metadata
+
+                    conversation_recorder.record_assistant(
+                        content, metadata=tool_provenance_metadata(tool_results)
+                    )
                 publish_completed_exchange(
                     bus,
                     user_input,

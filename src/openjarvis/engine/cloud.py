@@ -904,6 +904,10 @@ class CloudEngine(InferenceEngine):
         # Extract text and function_call parts from response
         text_parts: list[str] = []
         tool_calls: list[Dict[str, Any]] = []
+        # Gemini returns no call IDs. Same-name calls must not collide, and
+        # thought signatures are keyed by ID on this shared engine, so use a
+        # per-response nonce plus the call index (mirrors the stream path).
+        response_id = uuid.uuid4().hex
         candidates = getattr(resp, "candidates", None)
         if candidates:
             parts = getattr(candidates[0].content, "parts", [])
@@ -912,7 +916,7 @@ class CloudEngine(InferenceEngine):
                     fc = part.function_call
                     fc_args = dict(fc.args) if hasattr(fc.args, "items") else {}
                     tc_dict: Dict[str, Any] = {
-                        "id": f"google_{fc.name}",
+                        "id": f"google_{response_id}_{len(tool_calls)}",
                         "name": fc.name,
                         "arguments": json.dumps(fc_args),
                     }

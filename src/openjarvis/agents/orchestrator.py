@@ -24,6 +24,7 @@ from openjarvis.core.registry import AgentRegistry
 from openjarvis.core.types import Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.tools._stubs import BaseTool
+from openjarvis.tools.outcomes import ToolOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -104,15 +105,17 @@ class OrchestratorAgent(ToolUsingAgent):
     # Governance hook
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _governance_denial(tool_name: str, reason: str) -> ToolResult:
-        return ToolResult(
-            tool_name=tool_name,
-            content=(
-                f"[Governance] Tool '{tool_name}' was not approved ({reason}). "
-                "Adjust your plan and try a different approach."
-            ),
-            success=False,
+    def _governance_denial(self, tc: ToolCall, reason: str) -> ToolResult:
+        return self._blocked_tool_result(
+            tc,
+            ToolOutcome.POLICY_DENIED,
+            f"[Governance] Tool '{tc.name}' was not approved ({reason}). "
+            "Adjust your plan and try a different approach.",
+        )
+
+    def _loop_guard_result(self, tc: ToolCall, reason: str) -> ToolResult:
+        return self._blocked_tool_result(
+            tc, ToolOutcome.LOOP_GUARD_BLOCKED, f"Loop guard: {reason}"
         )
 
     def _check_tool_allowed(self, tc: ToolCall) -> Optional[ToolResult]:
@@ -128,18 +131,18 @@ class OrchestratorAgent(ToolUsingAgent):
         try:
             tool_args = json.loads(tc.arguments) if tc.arguments else {}
         except (json.JSONDecodeError, TypeError):
-            return self._governance_denial(tc.name, "invalid tool arguments")
+            return self._governance_denial(tc, "invalid tool arguments")
         if not isinstance(tool_args, dict):
-            return self._governance_denial(tc.name, "tool arguments are not an object")
+            return self._governance_denial(tc, "tool arguments are not an object")
 
         try:
             allowed = self._before_tool_call(tc.name, tool_args)
         except Exception:
             logger.exception("before_tool_call hook failed for tool %s", tc.name)
-            return self._governance_denial(tc.name, "governance check failed")
+            return self._governance_denial(tc, "governance check failed")
         if allowed:
             return None
-        return self._governance_denial(tc.name, "policy denied the call")
+        return self._governance_denial(tc, "policy denied the call")
 
     # ------------------------------------------------------------------
     # Structured mode (THOUGHT/TOOL/INPUT/FINAL_ANSWER)
@@ -193,7 +196,7 @@ class OrchestratorAgent(ToolUsingAgent):
                 messages.append(Message(role=Role.ASSISTANT, content=content))
 
                 tool_call = ToolCall(
-                    id=f"orch_{turns}",
+                    id=self._new_tool_call_id(),
                     name=parsed["tool"],
                     arguments=self._normalize_structured_tool_input(
                         parsed["tool"],
@@ -442,11 +445,7 @@ class OrchestratorAgent(ToolUsingAgent):
                             tc.arguments,
                         )
                         if verdict.blocked:
-                            return tc, ToolResult(
-                                tool_name=tc.name,
-                                content=f"Loop guard: {verdict.reason}",
-                                success=False,
-                            )
+                            return tc, self._loop_guard_result(tc, verdict.reason)
                     return tc, self._executor.execute(tc)
 
                 if approved_calls:
@@ -496,11 +495,7 @@ class OrchestratorAgent(ToolUsingAgent):
                             tc.arguments,
                         )
                         if verdict.blocked:
-                            tool_result = ToolResult(
-                                tool_name=tc.name,
-                                content=f"Loop guard: {verdict.reason}",
-                                success=False,
-                            )
+                            tool_result = self._loop_guard_result(tc, verdict.reason)
                             all_tool_results.append(tool_result)
                             messages.append(
                                 Message(

@@ -20,6 +20,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
+from openjarvis.tools.call_ids import new_tool_call_id
+from openjarvis.tools.outcomes import ToolOutcome, annotate_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -249,32 +251,45 @@ class ToolExecutor:
                 self._session_taint = None
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
-        """Parse arguments, dispatch to tool, measure latency, emit events."""
+        """Parse arguments, dispatch to tool, measure latency, emit events.
+
+        Every returned ``ToolResult`` carries a :class:`ToolOutcome` and the
+        originating tool-call ID in ``metadata`` (see
+        :mod:`openjarvis.tools.outcomes`). A call rejected before execution
+        publishes ``TOOL_CALL_BLOCKED`` instead of ``TOOL_CALL_START``/``END``.
+        """
+        # An empty ID cannot correlate anything; give the call a fresh one.
+        # Non-empty IDs are kept verbatim so they match the caller's messages.
+        call_id = tool_call.id if tool_call.id else new_tool_call_id()
+
         tool = self._tools.get(tool_call.name)
         if tool is None:
-            return ToolResult(
-                tool_name=tool_call.name,
-                content=f"Unknown tool: {tool_call.name}",
-                success=False,
+            return self._blocked(
+                tool_call.name,
+                call_id,
+                ToolOutcome.UNKNOWN_TOOL,
+                f"Unknown tool: {tool_call.name}",
             )
 
         # Parse arguments
         try:
             params = json.loads(tool_call.arguments) if tool_call.arguments else {}
         except json.JSONDecodeError as exc:
-            return ToolResult(
-                tool_name=tool_call.name,
-                content=f"Invalid arguments JSON: {exc}",
-                success=False,
+            return self._blocked(
+                tool_call.name,
+                call_id,
+                ToolOutcome.INVALID_ARGS,
+                f"Invalid arguments JSON: {exc}",
             )
         if not isinstance(params, dict):
-            return ToolResult(
-                tool_name=tool_call.name,
-                content=(
+            return self._blocked(
+                tool_call.name,
+                call_id,
+                ToolOutcome.INVALID_ARGS,
+                (
                     "Invalid arguments: expected a JSON object, "
                     f"got {type(params).__name__}."
                 ),
-                success=False,
             )
 
         # Rate limiting — checked before any other gate so a hammering
@@ -290,16 +305,18 @@ class ToolExecutor:
                         {
                             "agent_id": self._agent_id,
                             "tool": tool_call.name,
+                            "tool_call_id": call_id,
                             "wait_seconds": wait_seconds,
                         },
                     )
-                return ToolResult(
-                    tool_name=tool_call.name,
-                    content=(
+                return self._blocked(
+                    tool_call.name,
+                    call_id,
+                    ToolOutcome.RATE_LIMITED,
+                    (
                         f"Rate limit exceeded for tool '{tool_call.name}'."
                         f" Retry after {wait_seconds:.1f}s."
                     ),
-                    success=False,
                 )
 
         # Boundary guard: scan external tool arguments
@@ -309,19 +326,21 @@ class ToolExecutor:
                 # Re-parse arguments after potential redaction
                 params = json.loads(tool_call.arguments) if tool_call.arguments else {}
                 if not isinstance(params, dict):
-                    return ToolResult(
-                        tool_name=tool_call.name,
-                        content=(
+                    return self._blocked(
+                        tool_call.name,
+                        call_id,
+                        ToolOutcome.INVALID_ARGS,
+                        (
                             "Invalid arguments: expected a JSON object, "
                             f"got {type(params).__name__}."
                         ),
-                        success=False,
                     )
             except Exception as exc:
-                return ToolResult(
-                    tool_name=tool_call.name,
-                    content=f"Security block: {exc}",
-                    success=False,
+                return self._blocked(
+                    tool_call.name,
+                    call_id,
+                    ToolOutcome.BOUNDARY_BLOCKED,
+                    f"Security block: {exc}",
                 )
 
         # RBAC capability check.  A built-in's canonical requirements are a
@@ -350,16 +369,18 @@ class ToolExecutor:
                                 "agent_id": self._agent_id,
                                 "capability": cap,
                                 "tool": tool_call.name,
+                                "tool_call_id": call_id,
                             },
                         )
-                    return ToolResult(
-                        tool_name=tool_call.name,
-                        content=(
+                    return self._blocked(
+                        tool_call.name,
+                        call_id,
+                        ToolOutcome.CAPABILITY_DENIED,
+                        (
                             f"Capability '{cap}' denied for"
                             f" agent '{self._agent_id}'"
                             f" on tool '{tool_call.name}'."
                         ),
-                        success=False,
                     )
 
         # Taint checking (sink policy). The effective taint is the union of any
@@ -383,13 +404,15 @@ class ToolExecutor:
                             EventType.TAINT_VIOLATION,
                             {
                                 "tool": tool_call.name,
+                                "tool_call_id": call_id,
                                 "violation": violation,
                             },
                         )
-                    return ToolResult(
-                        tool_name=tool_call.name,
-                        content=f"Taint violation: {violation}",
-                        success=False,
+                    return self._blocked(
+                        tool_call.name,
+                        call_id,
+                        ToolOutcome.TAINT_BLOCKED,
+                        f"Taint violation: {violation}",
                     )
         except ImportError:
             pass
@@ -400,21 +423,23 @@ class ToolExecutor:
         # Confirmation check for sensitive tools
         if tool.spec.requires_confirmation:
             if not self._interactive or self._confirm_callback is None:
-                return ToolResult(
-                    tool_name=tool_call.name,
-                    content=(
+                return self._blocked(
+                    tool_call.name,
+                    call_id,
+                    ToolOutcome.DENIED,
+                    (
                         f"Tool '{tool_call.name}' requires"
                         " confirmation but no confirmation"
                         " callback is available."
                     ),
-                    success=False,
                 )
             prompt = f"Allow execution of tool '{tool_call.name}' with args {params}?"
             if not self._confirm_callback(prompt):
-                return ToolResult(
-                    tool_name=tool_call.name,
-                    content=f"Tool '{tool_call.name}' execution denied by user.",
-                    success=False,
+                return self._blocked(
+                    tool_call.name,
+                    call_id,
+                    ToolOutcome.DENIED,
+                    f"Tool '{tool_call.name}' execution denied by user.",
                 )
 
         # Emit start event. ``agent`` carries the managed-agent UUID so the
@@ -426,6 +451,7 @@ class ToolExecutor:
                 EventType.TOOL_CALL_START,
                 {
                     "tool": tool_call.name,
+                    "tool_call_id": call_id,
                     "arguments": params,
                     "agent": self._agent_id,
                 },
@@ -437,6 +463,7 @@ class ToolExecutor:
         future = _TOOL_RUNNER.submit(tool.execute, **params)
         try:
             if future is None:
+                outcome = ToolOutcome.CAPACITY_EXHAUSTED
                 result = ToolResult(
                     tool_name=tool_call.name,
                     content=(
@@ -447,6 +474,7 @@ class ToolExecutor:
                 )
             else:
                 result = future.result(timeout=timeout)
+                outcome = ToolOutcome.SUCCESS if result.success else ToolOutcome.ERROR
         except concurrent.futures.TimeoutError:
             # This succeeds for queued work. Python cannot stop an already-running
             # function, but the bounded daemon runner prevents it from spawning an
@@ -455,14 +483,20 @@ class ToolExecutor:
             if self._bus:
                 self._bus.publish(
                     EventType.TOOL_TIMEOUT,
-                    {"tool": tool_call.name, "timeout": timeout},
+                    {
+                        "tool": tool_call.name,
+                        "tool_call_id": call_id,
+                        "timeout": timeout,
+                    },
                 )
+            outcome = ToolOutcome.TIMEOUT
             result = ToolResult(
                 tool_name=tool_call.name,
                 content=(f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."),
                 success=False,
             )
         except Exception as exc:
+            outcome = ToolOutcome.ERROR
             result = ToolResult(
                 tool_name=tool_call.name,
                 content=f"Tool execution error: {exc}",
@@ -471,6 +505,8 @@ class ToolExecutor:
         latency = time.time() - t0
         result.latency_seconds = latency
         result.metadata["arguments"] = params
+        # Set after the tool returns so a tool cannot spoof its own outcome.
+        annotate_tool_result(result, tool_call_id=call_id, outcome=outcome)
 
         # Auto-detect taints in results and fold them into the running session
         # taint so later calls (e.g. http_request) are gated on what earlier
@@ -508,6 +544,7 @@ class ToolExecutor:
                             {
                                 "source": "tool_output_injection_scan",
                                 "tool": tool_call.name,
+                                "tool_call_id": call_id,
                                 "threat_level": level,
                                 "findings": len(scan.findings),
                             },
@@ -539,6 +576,8 @@ class ToolExecutor:
                 EventType.TOOL_CALL_END,
                 {
                     "tool": tool_call.name,
+                    "tool_call_id": call_id,
+                    "outcome": outcome.value,
                     "success": result.success,
                     "latency": latency,
                     "result": result_text,
@@ -548,6 +587,31 @@ class ToolExecutor:
             )
 
         return result
+
+    def _blocked(
+        self,
+        tool_name: str,
+        call_id: str,
+        outcome: ToolOutcome,
+        content: str,
+    ) -> ToolResult:
+        """Build the result for a call rejected before execution.
+
+        Publishes ``TOOL_CALL_BLOCKED`` with correlation fields only — never
+        the call's arguments or any tool output.
+        """
+        if self._bus:
+            self._bus.publish(
+                EventType.TOOL_CALL_BLOCKED,
+                {
+                    "tool": tool_name,
+                    "tool_call_id": call_id,
+                    "outcome": outcome.value,
+                    "agent": self._agent_id,
+                },
+            )
+        result = ToolResult(tool_name=tool_name, content=content, success=False)
+        return annotate_tool_result(result, tool_call_id=call_id, outcome=outcome)
 
     @staticmethod
     def _json_safe_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -172,6 +172,7 @@ def test_factory_synchronizes_prebuilt_rlm_lazy_executor_runtime(monkeypatch) ->
             "agent_id": "server-rlm",
             "capability": "code:execute",
             "tool": "rlm_repl",
+            "tool_call_id": ANY,
         }
         for event in bus.history
     )
@@ -262,6 +263,7 @@ def test_factory_overrides_prebuilt_executor_identity_at_server_boundary() -> No
             "agent_id": "tenant-denied",
             "capability": "system:admin",
             "tool": "tenant_admin_probe",
+            "tool_call_id": ANY,
         }
         for event in bus.history
     )

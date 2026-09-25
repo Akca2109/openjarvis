@@ -9,6 +9,7 @@ from openjarvis.conversations.history import (
     build_resume_context,
     normalize_context_messages,
 )
+from openjarvis.conversations.provenance import tool_provenance_metadata
 from openjarvis.conversations.recorder import ConversationRecorder, ResumedConversation
 from openjarvis.conversations.store import (
     MAX_METADATA_BYTES,
@@ -41,4 +42,5 @@ __all__ = [
     "ResumedConversation",
     "build_resume_context",
     "normalize_context_messages",
+    "tool_provenance_metadata",
 ]

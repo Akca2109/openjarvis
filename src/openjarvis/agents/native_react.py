@@ -20,6 +20,7 @@ from openjarvis.core.registry import AgentRegistry
 from openjarvis.core.types import Message, Role, ToolCall, ToolResult, _message_to_dict
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.tools._stubs import BaseTool, build_tool_descriptions
+from openjarvis.tools.outcomes import ToolOutcome
 
 REACT_SYSTEM_PROMPT = """\
 You are a ReAct agent. For each step, respond with exactly one of:
@@ -327,7 +328,7 @@ class NativeReActAgent(ToolUsingAgent):
             messages.append(Message(role=Role.ASSISTANT, content=content))
 
             tool_call = ToolCall(
-                id=f"react_{turns}",
+                id=self._new_tool_call_id(),
                 name=parsed["action"],
                 arguments=parsed["action_input"] or "{}",
             )
@@ -339,10 +340,10 @@ class NativeReActAgent(ToolUsingAgent):
                     tool_call.arguments,
                 )
                 if verdict.blocked:
-                    tool_result = ToolResult(
-                        tool_name=tool_call.name,
-                        content=f"Loop guard: {verdict.reason}",
-                        success=False,
+                    tool_result = self._blocked_tool_result(
+                        tool_call,
+                        ToolOutcome.LOOP_GUARD_BLOCKED,
+                        f"Loop guard: {verdict.reason}",
                     )
                     all_tool_results.append(tool_result)
                     observation = f"Observation: {tool_result.content}"

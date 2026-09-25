@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 from openjarvis.agents.hybrid.skillorchestra.agent import SkillOrchestraAgent
 from openjarvis.agents.hybrid.skillorchestra.pool import ModelSpec
@@ -67,6 +67,7 @@ def test_enhance_reasoning_denial_prevents_python_subprocess(monkeypatch):
             "agent_id": "skill-runtime",
             "capability": "code:execute",
             "tool": "skillorchestra_code",
+            "tool_call_id": ANY,
         }
         for event in bus.history
     )
@@ -173,6 +174,7 @@ def test_default_provider_search_denial_prevents_provider_call(monkeypatch):
             "agent_id": "skill-runtime",
             "capability": "network:fetch",
             "tool": "skillorchestra_provider_search",
+            "tool_call_id": ANY,
         }
         for event in bus.history
     )

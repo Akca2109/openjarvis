@@ -2,6 +2,7 @@
 
 import inspect
 from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pytest
 
@@ -74,6 +75,7 @@ class TestAgentRoutes:
             "agent_id": "server:api",
             "capability": "system:admin",
             "tool": "agent_spawn",
+            "tool_call_id": ANY,
         }
 
     def test_agent_listing_is_capability_gated_before_disclosure(self):
@@ -103,6 +105,7 @@ class TestAgentRoutes:
                 "agent_id": "server:api",
                 "capability": "system:admin",
                 "tool": "agent_list",
+                "tool_call_id": ANY,
             }
             for event in app.state.bus.history
         )

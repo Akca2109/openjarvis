@@ -11,12 +11,15 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from openjarvis.core.config import load_config
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Conversation, Message, Role, ToolResult
 from openjarvis.engine._stubs import InferenceEngine
+
+if TYPE_CHECKING:
+    from openjarvis.tools.call_ids import ToolCallIdAllocator
 
 _ALLOWED_ENGINE_OPTION_KEYS = frozenset({"num_ctx", "num_gpu"})
 
@@ -294,6 +297,7 @@ class BaseAgent(ABC):
             max_tokens=self._max_tokens,
             **gen_kwargs,
         )
+        result = self._normalize_generation_result(result)
 
         if self._bus and not getattr(self._engine, "_publishes_events", False):
             usage = result.get("usage", {})
@@ -308,6 +312,10 @@ class BaseAgent(ABC):
                 },
             )
 
+        return result
+
+    def _normalize_generation_result(self, result: dict) -> dict:
+        """Hook for subclasses to normalize a raw ``engine.generate()`` result."""
         return result
 
     def _max_turns_result(
@@ -434,8 +442,11 @@ class ToolUsingAgent(BaseAgent):
             agent_id=agent_id,
         )
         from openjarvis.tools._stubs import ToolExecutor
+        from openjarvis.tools.call_ids import ToolCallIdAllocator
 
         self._tools = tools or []
+        # Run-local tool-call IDs; reset at the start of every run.
+        self._tool_call_ids = ToolCallIdAllocator()
         # Plan 2B I3: store optimized few-shot examples for agents to inject
         # into their own system prompt templates as appropriate.
         self._skill_few_shot_examples = list(skill_few_shot_examples or [])
@@ -481,7 +492,66 @@ class ToolUsingAgent(BaseAgent):
         executor = getattr(self, "_executor", None)
         if executor is not None:
             executor.begin_session([input])
+        self._call_id_allocator().reset()
         super()._emit_turn_start(input)
+
+    def _normalize_generation_result(self, result: dict) -> dict:
+        """Give every returned tool call a non-empty, run-unique ID.
+
+        Providers may omit IDs or derive them from the function name or the
+        call's index in one response (``call_0`` on every turn). Valid,
+        unused provider IDs are kept; the rest are replaced. The engine's
+        dicts are copied, not mutated.
+        """
+        raw_tool_calls = result.get("tool_calls") if isinstance(result, dict) else None
+        if not raw_tool_calls or not isinstance(raw_tool_calls, list):
+            return result
+        normalized = []
+        for tc in raw_tool_calls:
+            if isinstance(tc, dict):
+                tc = {**tc, "id": self._call_id_allocator().claim(tc.get("id"))}
+            normalized.append(tc)
+        return {**result, "tool_calls": normalized}
+
+    def _blocked_tool_result(
+        self,
+        tool_call: Any,
+        outcome: Any,
+        content: str,
+    ) -> ToolResult:
+        """Result for a call an agent-level gate rejected before execution.
+
+        Mirrors ``ToolExecutor``'s contract: the result carries *outcome* and
+        the call's ID, and ``TOOL_CALL_BLOCKED`` is published with correlation
+        fields only — never arguments or output. No ``TOOL_CALL_START``/``END``
+        is emitted because the tool never ran.
+        """
+        from openjarvis.tools.outcomes import annotate_tool_result
+
+        if self._bus:
+            self._bus.publish(
+                EventType.TOOL_CALL_BLOCKED,
+                {
+                    "tool": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                    "outcome": outcome.value,
+                    "agent": self._runtime_agent_id,
+                },
+            )
+        result = ToolResult(tool_name=tool_call.name, content=content, success=False)
+        return annotate_tool_result(result, tool_call_id=tool_call.id, outcome=outcome)
+
+    def _new_tool_call_id(self) -> str:
+        """Return a fresh run-unique ID for an agent-synthesized tool call."""
+        return self._call_id_allocator().claim()
+
+    def _call_id_allocator(self) -> ToolCallIdAllocator:
+        allocator = getattr(self, "_tool_call_ids", None)
+        if allocator is None:
+            from openjarvis.tools.call_ids import ToolCallIdAllocator
+
+            allocator = self._tool_call_ids = ToolCallIdAllocator()
+        return allocator
 
     def _build_messages(
         self,

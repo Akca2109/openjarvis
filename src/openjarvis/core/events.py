@@ -28,6 +28,8 @@ class EventType(str, Enum):
     INFERENCE_END = "inference_end"
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_END = "tool_call_end"
+    # A tool call rejected before execution (no TOOL_CALL_START/END pair).
+    TOOL_CALL_BLOCKED = "tool_call_blocked"
     MEMORY_STORE = "memory_store"
     MEMORY_RETRIEVE = "memory_retrieve"
     CHAT_EXCHANGE_COMPLETED = "chat_exchange_completed"

@@ -146,9 +146,16 @@ class ConversationRecorder:
         return message.message_id
 
     def record_assistant(
-        self, content: str, *, trace_id: Optional[str] = None
+        self,
+        content: str,
+        *,
+        trace_id: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> Optional[str]:
         """Persist a completed assistant turn; returns its ``message_id``.
+
+        ``metadata`` is flat, scalar, content-free provenance (see
+        :mod:`openjarvis.conversations.provenance`).
 
         Does nothing if no user turn has been recorded in the current
         conversation, so an assistant reply is never orphaned.
@@ -166,6 +173,7 @@ class ConversationRecorder:
                 agent_id=self._agent_id,
                 model=self._model,
                 trace_id=trace_id,
+                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001 — history must never break chat
             self._fail(exc)
