@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 from typing import TYPE_CHECKING, List, Optional
@@ -11,6 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
 
+from openjarvis.cli._confirm import confirm_tool_call, safe_rich_text
 from openjarvis.cli._runtime_panel import runtime_cli_options
 from openjarvis.cli._tool_names import resolve_tool_names
 from openjarvis.cli._voice_chat import VOICE_EXIT, VoiceSession, read_voice_input, speak
@@ -311,15 +313,17 @@ def chat(
                     kwargs["max_turns"] = config.agent.max_turns
 
                     def _confirm(prompt: str) -> bool:
-                        console.print(
-                            f"[yellow]Confirm:[/yellow] {prompt} [y/N] ",
-                            end="",
-                        )
-                        ans = input().strip().lower()
-                        return ans in ("y", "yes")
+                        return confirm_tool_call(prompt, console=console)
 
                     kwargs["interactive"] = True
                     kwargs["confirm_callback"] = _confirm
+                    # One confirmation prompt at a time: never run tool calls
+                    # in parallel when a human must approve them.
+                    if (
+                        "parallel_tools"
+                        in inspect.signature(agent_cls.__init__).parameters
+                    ):
+                        kwargs["parallel_tools"] = False
 
                 from openjarvis.security.runtime import agent_security_kwargs
 
@@ -332,12 +336,7 @@ def chat(
                     )
                 )
 
-                import inspect as _inspect
-
-                if (
-                    "prompt_builder"
-                    in _inspect.signature(agent_cls.__init__).parameters
-                ):
+                if "prompt_builder" in inspect.signature(agent_cls.__init__).parameters:
                     from openjarvis.prompt.builder import SystemPromptBuilder
 
                     kwargs["prompt_builder"] = SystemPromptBuilder(
@@ -363,7 +362,7 @@ def chat(
         except Exception as exc:
             console.print(
                 f"[yellow]Agent '{_safe_rich_label(agent_key)}' failed: "
-                f"{escape(str(exc))}[/yellow]"
+                f"{safe_rich_text(exc)}[/yellow]"
             )
 
     # Keep voice state outside the core chat path so picker/runtime changes can
@@ -410,7 +409,9 @@ def chat(
             memory_service.start()
             console.print("[dim]  Memory: active[/dim]")
     except Exception as exc:
-        console.print(f"[yellow]Memory service unavailable: {exc}[/yellow]")
+        console.print(
+            f"[yellow]Memory service unavailable: {safe_rich_text(exc)}[/yellow]"
+        )
         memory_service = None
 
     # The document backend and automatic fact store are separate persistence
@@ -541,7 +542,8 @@ def chat(
                             msg.role if isinstance(msg.role, str) else msg.role.value
                         )
                         role = role_str.upper()
-                        console.print(f"[bold]{role}:[/bold] {msg.content[:200]}")
+                        preview = safe_rich_text(msg.content[:200], single_line=False)
+                        console.print(f"[bold]{role}:[/bold] {preview}")
                 continue
 
             # Add user message
@@ -633,7 +635,7 @@ def chat(
             except KeyboardInterrupt:
                 console.print("\n[dim]Generation interrupted.[/dim]")
             except Exception as exc:
-                console.print(f"\n[red]Error: {exc}[/red]\n")
+                console.print(f"\n[red]Error: {safe_rich_text(exc)}[/red]\n")
 
     finally:
         if conversation_recorder is not None:

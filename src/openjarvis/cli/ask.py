@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from openjarvis.cli._banner import print_banner
+from openjarvis.cli._confirm import confirm_tool_call
 from openjarvis.cli._tool_names import resolve_tool_names
 from openjarvis.cli.hints import hint_no_engine
 from openjarvis.core.config import load_config
@@ -56,14 +57,12 @@ LOCAL_ENGINES = {
 def _confirm_tool_call(prompt: str) -> bool:
     """Ask the user to approve a requires_confirmation tool call.
 
-    Defaults to deny, and denies when no answer can be read (EOF / non-TTY),
-    so a sensitive tool never runs without an explicit "yes". The prompt goes
-    to stderr to keep ``--json`` output on stdout clean.
+    Defaults to deny, and denies when no answer can be read (EOF / non-TTY /
+    Ctrl-C), so a sensitive tool never runs without an explicit "yes". The
+    prompt carries model-chosen arguments, so it is sanitized before display.
+    It goes to stderr to keep ``--json`` output on stdout clean.
     """
-    try:
-        return click.confirm(f"\n{prompt}", default=False, err=True)
-    except click.Abort:
-        return False
+    return confirm_tool_call(prompt)
 
 
 def _run_research(
