@@ -358,156 +358,191 @@ def chat(
     if system_prompt:
         history.append(Message(role=Role.SYSTEM, content=system_prompt))
 
-    # REPL loop
-    while True:
-        for note in _notifications.diff(get_status()):
-            console.print(f"[dim cyan]{note}[/dim cyan]")
+    # Durable local conversation history (conversations.db). Only real user
+    # and completed assistant turns are recorded — never the system prompt,
+    # persona, injected memory context, or slash commands. Voice chats are
+    # not persisted.
+    conversation_recorder = None
+    if not voice_mode:
+        from openjarvis.conversations import ConversationRecorder
 
-        if voice_mode:
-            assert voice_session is not None
-            result = read_voice_input(console, voice_session)
-            if result is VOICE_EXIT:
-                console.print("\n[dim]Goodbye![/dim]")
-                break
-            if result is None:
-                continue  # nothing heard, loop again
-            user_input = result
-        else:
-            user_input = _read_input()
-            if user_input is None:
-                console.print("\n[dim]Goodbye![/dim]")
-                break
-            user_input = user_input.strip()
-            if not user_input:
-                continue
+        conversation_recorder = ConversationRecorder.from_config(
+            config,
+            surface="cli",
+            origin="cli",
+            model=model,
+            agent_id=agent_key if agent is not None else None,
+            metadata={"engine": engine_name},
+            warn=lambda msg: console.print(f"[dim yellow]{escape(msg)}[/dim yellow]"),
+        )
 
-        # Handle slash commands
-        cmd = user_input.lower()
-        if cmd in ("/quit", "/exit", "/q"):
-            console.print("[dim]Goodbye![/dim]")
-            break
-        elif cmd == "/clear":
-            history = []
-            if system_prompt:
-                history.append(Message(role=Role.SYSTEM, content=system_prompt))
-            console.print("[dim]History cleared.[/dim]")
-            continue
-        elif cmd == "/model":
-            console.print(
-                f"Model: [cyan]{_safe_rich_label(model)}[/cyan]  "
-                f"Engine: [cyan]{_safe_rich_label(engine_name)}[/cyan]"
-            )
-            continue
-        elif cmd == "/runtime":
-            console.print(
-                f"Runtime: [cyan]{runtime_opts.summary(engine_name=engine_name)}[/cyan]"
-            )
-            if engine_kwargs:
-                console.print(f"  engine kwargs: {engine_kwargs}")
-            continue
-        elif cmd == "/help":
-            console.print(
-                "[bold]Commands:[/bold]\n"
-                "  /quit, /exit  — end session\n"
-                "  /clear        — clear conversation\n"
-                "  /model        — show model info\n"
-                "  /runtime      — Ollama context + GPU offload for this session\n"
-                "  /history      — show conversation\n"
-                "  /help         — this message"
-            )
-            continue
-        elif cmd == "/history":
-            if not history:
-                console.print("[dim]No history yet.[/dim]")
-            else:
-                for msg in history:
-                    role_str = msg.role if isinstance(msg.role, str) else msg.role.value
-                    role = role_str.upper()
-                    console.print(f"[bold]{role}:[/bold] {msg.content[:200]}")
-            continue
+    # REPL loop. The recorder is closed however the loop exits; memory
+    # service shutdown below keeps its existing (non-finally) behavior.
+    try:
+        while True:
+            for note in _notifications.diff(get_status()):
+                console.print(f"[dim cyan]{note}[/dim cyan]")
 
-        # Add user message
-        history.append(Message(role=Role.USER, content=user_input))
-
-        generation_history = history
-        agent_context_message = None
-        if config.agent.context_from_memory:
-            try:
-                from openjarvis.memory import load_configured_facts
-                from openjarvis.tools.storage.context import (
-                    ContextConfig,
-                    inject_context,
-                )
-
-                if memory_service is not None and hasattr(memory_service, "list_facts"):
-                    facts = memory_service.list_facts()
-                else:
-                    facts = load_configured_facts(config)
-                ctx_cfg = ContextConfig(
-                    top_k=config.memory.context_top_k,
-                    min_score=config.memory.context_min_score,
-                    max_context_tokens=config.memory.context_max_tokens,
-                )
-                context_messages = inject_context(
-                    user_input,
-                    [] if agent is not None else history,
-                    memory_backend,
-                    config=ctx_cfg,
-                    facts=facts,
-                )
-                if agent is not None:
-                    if context_messages:
-                        agent_context_message = context_messages[0]
-                else:
-                    generation_history = context_messages
-            except Exception:
-                logger.debug("Failed to inject memory context", exc_info=True)
-
-        # Generate response even when optional memory context is unavailable.
-        try:
-            if agent is not None:
-                from openjarvis.agents._stubs import AgentContext
-
-                agent_context = AgentContext()
-                if agent_context_message is not None:
-                    agent_context.conversation.add(agent_context_message)
-                for msg in history[:-1]:
-                    if msg.role != Role.SYSTEM:
-                        agent_context.conversation.add(msg)
-                response = agent.run(user_input, context=agent_context)
-                content = (
-                    response.content if hasattr(response, "content") else str(response)
-                )
-            else:
-                result = engine.generate(
-                    generation_history,
-                    model=model,
-                    **engine_kwargs,
-                )
-                content = (
-                    result.get("content", "")
-                    if isinstance(result, dict)
-                    else str(result)
-                )
-
-            history.append(Message(role=Role.ASSISTANT, content=content))
-            console.print()
-            console.print(Markdown(content))
-            console.print()
             if voice_mode:
                 assert voice_session is not None
-                speak(content, console, voice_session)
+                result = read_voice_input(console, voice_session)
+                if result is VOICE_EXIT:
+                    console.print("\n[dim]Goodbye![/dim]")
+                    break
+                if result is None:
+                    continue  # nothing heard, loop again
+                user_input = result
+            else:
+                user_input = _read_input()
+                if user_input is None:
+                    console.print("\n[dim]Goodbye![/dim]")
+                    break
+                user_input = user_input.strip()
+                if not user_input:
+                    continue
 
-            publish_completed_exchange(
-                bus,
-                user_input,
-                content,
-                source="cli.chat",
-            )
-        except KeyboardInterrupt:
-            console.print("\n[dim]Generation interrupted.[/dim]")
-        except Exception as exc:
-            console.print(f"\n[red]Error: {exc}[/red]\n")
+            # Handle slash commands
+            cmd = user_input.lower()
+            if cmd in ("/quit", "/exit", "/q"):
+                console.print("[dim]Goodbye![/dim]")
+                break
+            elif cmd == "/clear":
+                history = []
+                if system_prompt:
+                    history.append(Message(role=Role.SYSTEM, content=system_prompt))
+                if conversation_recorder is not None:
+                    conversation_recorder.reset()
+                console.print("[dim]History cleared.[/dim]")
+                continue
+            elif cmd == "/model":
+                console.print(
+                    f"Model: [cyan]{_safe_rich_label(model)}[/cyan]  "
+                    f"Engine: [cyan]{_safe_rich_label(engine_name)}[/cyan]"
+                )
+                continue
+            elif cmd == "/runtime":
+                runtime_summary = runtime_opts.summary(engine_name=engine_name)
+                console.print(f"Runtime: [cyan]{runtime_summary}[/cyan]")
+                if engine_kwargs:
+                    console.print(f"  engine kwargs: {engine_kwargs}")
+                continue
+            elif cmd == "/help":
+                console.print(
+                    "[bold]Commands:[/bold]\n"
+                    "  /quit, /exit  — end session\n"
+                    "  /clear        — clear conversation\n"
+                    "  /model        — show model info\n"
+                    "  /runtime      — Ollama context + GPU offload for this session\n"
+                    "  /history      — show conversation\n"
+                    "  /help         — this message"
+                )
+                continue
+            elif cmd == "/history":
+                if not history:
+                    console.print("[dim]No history yet.[/dim]")
+                else:
+                    for msg in history:
+                        role_str = (
+                            msg.role if isinstance(msg.role, str) else msg.role.value
+                        )
+                        role = role_str.upper()
+                        console.print(f"[bold]{role}:[/bold] {msg.content[:200]}")
+                continue
+
+            # Add user message
+            history.append(Message(role=Role.USER, content=user_input))
+            if conversation_recorder is not None:
+                conversation_recorder.record_user(user_input)
+
+            generation_history = history
+            agent_context_message = None
+            if config.agent.context_from_memory:
+                try:
+                    from openjarvis.memory import load_configured_facts
+                    from openjarvis.tools.storage.context import (
+                        ContextConfig,
+                        inject_context,
+                    )
+
+                    if memory_service is not None and hasattr(
+                        memory_service, "list_facts"
+                    ):
+                        facts = memory_service.list_facts()
+                    else:
+                        facts = load_configured_facts(config)
+                    ctx_cfg = ContextConfig(
+                        top_k=config.memory.context_top_k,
+                        min_score=config.memory.context_min_score,
+                        max_context_tokens=config.memory.context_max_tokens,
+                    )
+                    context_messages = inject_context(
+                        user_input,
+                        [] if agent is not None else history,
+                        memory_backend,
+                        config=ctx_cfg,
+                        facts=facts,
+                    )
+                    if agent is not None:
+                        if context_messages:
+                            agent_context_message = context_messages[0]
+                    else:
+                        generation_history = context_messages
+                except Exception:
+                    logger.debug("Failed to inject memory context", exc_info=True)
+
+            # Generate response even when optional memory context is unavailable.
+            try:
+                if agent is not None:
+                    from openjarvis.agents._stubs import AgentContext
+
+                    agent_context = AgentContext()
+                    if agent_context_message is not None:
+                        agent_context.conversation.add(agent_context_message)
+                    for msg in history[:-1]:
+                        if msg.role != Role.SYSTEM:
+                            agent_context.conversation.add(msg)
+                    response = agent.run(user_input, context=agent_context)
+                    content = (
+                        response.content
+                        if hasattr(response, "content")
+                        else str(response)
+                    )
+                else:
+                    result = engine.generate(
+                        generation_history,
+                        model=model,
+                        **engine_kwargs,
+                    )
+                    content = (
+                        result.get("content", "")
+                        if isinstance(result, dict)
+                        else str(result)
+                    )
+
+                history.append(Message(role=Role.ASSISTANT, content=content))
+                console.print()
+                console.print(Markdown(content))
+                console.print()
+                if voice_mode:
+                    assert voice_session is not None
+                    speak(content, console, voice_session)
+
+                if conversation_recorder is not None:
+                    conversation_recorder.record_assistant(content)
+                publish_completed_exchange(
+                    bus,
+                    user_input,
+                    content,
+                    source="cli.chat",
+                )
+            except KeyboardInterrupt:
+                console.print("\n[dim]Generation interrupted.[/dim]")
+            except Exception as exc:
+                console.print(f"\n[red]Error: {exc}[/red]\n")
+
+    finally:
+        if conversation_recorder is not None:
+            conversation_recorder.close()
 
     if memory_service is not None:
         memory_service.stop()

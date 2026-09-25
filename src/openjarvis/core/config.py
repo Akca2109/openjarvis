@@ -1617,6 +1617,20 @@ class SessionConfig:
 
 
 @dataclass(slots=True)
+class ConversationsConfig:
+    """Durable, local, append-only conversation history.
+
+    Stored in SQLite (``conversations.db``) with owner-only permissions.
+    Note: the database's parent directory is restricted to ``0o700``.
+    """
+
+    enabled: bool = True
+    db_path: str = field(
+        default_factory=lambda: str(get_config_dir() / "conversations.db")
+    )
+
+
+@dataclass(slots=True)
 class A2AConfig:
     """Agent-to-Agent protocol settings."""
 
@@ -1807,6 +1821,7 @@ class JarvisConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     sessions: SessionConfig = field(default_factory=SessionConfig)
+    conversations: ConversationsConfig = field(default_factory=ConversationsConfig)
     a2a: A2AConfig = field(default_factory=A2AConfig)
     operators: OperatorsConfig = field(default_factory=OperatorsConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
@@ -2122,6 +2137,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "scheduler",
             "workflow",
             "sessions",
+            "conversations",
             "a2a",
             "operators",
             "speech",

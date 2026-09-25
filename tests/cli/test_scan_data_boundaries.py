@@ -46,6 +46,7 @@ def _low_noise_config():
     config.tools.storage.db_path = ""
     config.tools.storage.facts_path = ""
     config.sessions.db_path = ""
+    config.conversations.db_path = ""
     config.agent_manager.db_path = ""
     config.optimize.db_path = ""
     config.scheduler.db_path = ""

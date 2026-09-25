@@ -145,6 +145,7 @@ def _low_noise_config():
     config.tools.storage.db_path = ""
     config.tools.storage.facts_path = ""
     config.sessions.db_path = ""
+    config.conversations.db_path = ""
     config.agent_manager.db_path = ""
     config.optimize.db_path = ""
     config.scheduler.db_path = ""
@@ -275,6 +276,33 @@ def test_trace_database_presence_redacts_and_shows_paths(tmp_path):
     assert str(tmp_path) not in str(payload)
     assert "traces.db" in str(payload_with_paths)
     assert findings["local-store-traces-db"].absolute_location.endswith("traces.db")
+
+
+def test_conversation_database_is_reported(tmp_path):
+    config = _low_noise_config()
+    (tmp_path / "conversations.db").write_text("", encoding="utf-8")
+
+    report = build_data_boundary_report(config, tmp_path)
+
+    findings = {finding.id: finding for finding in report.findings}
+    assert findings["local-store-conversations-db"].status == "warn"
+    assert findings["local-store-conversations-db"].absolute_location.endswith(
+        "conversations.db"
+    )
+
+
+def test_custom_conversations_db_path_is_audited(tmp_path):
+    config = _low_noise_config()
+    custom_db = tmp_path / "custom" / "conversations.db"
+    custom_db.parent.mkdir()
+    custom_db.write_text("", encoding="utf-8")
+    config.conversations.db_path = str(custom_db)
+
+    report = build_data_boundary_report(config, tmp_path)
+
+    findings = {finding.id: finding for finding in report.findings}
+    finding = findings["local-store-conversations-db"]
+    assert str(custom_db) in finding.absolute_location
 
 
 def test_custom_traces_db_path_is_audited(tmp_path):
@@ -1312,6 +1340,7 @@ enabled = [
     config.tools.storage.db_path = ""
     config.tools.storage.facts_path = ""
     config.sessions.db_path = ""
+    config.conversations.db_path = ""
     config.agent_manager.db_path = ""
     config.optimize.db_path = ""
     config.optimize.optimizer_provider = ""
