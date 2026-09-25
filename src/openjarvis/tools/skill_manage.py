@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
+
+# A skill name is a bare identifier: it becomes ``<skills_dir>/<name>.toml``.
+_SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_OPTIONAL_STEP_FIELDS = ("arguments_template", "output_key")
 
 
 @ToolRegistry.register("skill_manage")
@@ -73,6 +78,29 @@ class SkillManageTool(BaseTool):
             content=f"Unknown action: {action}",
         )
 
+    def _skill_path(self, name: Any) -> Optional[Path]:
+        """``<skills_dir>/<name>.toml`` for a valid name that stays inside."""
+        if not isinstance(name, str) or not _SKILL_NAME_RE.fullmatch(name):
+            return None
+        path = self._skills_dir / f"{name}.toml"
+        try:
+            root = self._skills_dir.resolve()
+            if not path.resolve().is_relative_to(root):
+                return None
+        except (OSError, RuntimeError):
+            return None
+        return path
+
+    def _invalid_name(self) -> ToolResult:
+        return ToolResult(
+            tool_name=self.spec.name,
+            success=False,
+            content=(
+                "Invalid skill name: use 1-64 letters, digits, '_' or '-',"
+                " starting with a letter or digit."
+            ),
+        )
+
     def _create(self, name: str, description: str, steps: List[dict]) -> ToolResult:
         if not name:
             return ToolResult(
@@ -80,23 +108,30 @@ class SkillManageTool(BaseTool):
                 success=False,
                 content="Skill name is required.",
             )
+        if self._skill_path(name) is None:
+            return self._invalid_name()
+        if not isinstance(steps, list) or not all(isinstance(s, dict) for s in steps):
+            return ToolResult(
+                tool_name=self.spec.name,
+                success=False,
+                content="Skill steps must be a list of objects.",
+            )
         self._skills_dir.mkdir(parents=True, exist_ok=True)
-        path = self._skills_dir / f"{name}.toml"
-        lines = [
-            "[skill]",
-            f'name = "{name}"',
-            f'description = "{description}"',
-            "",
-        ]
-        for step in steps:
-            lines.append("[[skill.steps]]")
-            lines.append(f'tool_name = "{step.get("tool_name", "")}"')
-            if "arguments_template" in step:
-                lines.append(f"arguments_template = '{step['arguments_template']}'")
-            if "output_key" in step:
-                lines.append(f'output_key = "{step["output_key"]}"')
-            lines.append("")
-        path.write_text("\n".join(lines))
+        # Re-check now that the directory exists and resolves.
+        path = self._skill_path(name)
+        if path is None:
+            return self._invalid_name()
+        # Serialize with a TOML writer so no field can inject tables or keys.
+        import tomlkit
+
+        skill: dict[str, Any] = {"name": name, "description": str(description)}
+        if steps:
+            skill["steps"] = [
+                {"tool_name": str(step.get("tool_name", ""))}
+                | {key: str(step[key]) for key in _OPTIONAL_STEP_FIELDS if key in step}
+                for step in steps
+            ]
+        path.write_text(tomlkit.dumps({"skill": skill}))
         return ToolResult(
             tool_name=self.spec.name,
             success=True,
@@ -126,7 +161,9 @@ class SkillManageTool(BaseTool):
         )
 
     def _load(self, name: str) -> ToolResult:
-        path = self._skills_dir / f"{name}.toml"
+        path = self._skill_path(name)
+        if path is None:
+            return self._invalid_name()
         if not path.exists():
             return ToolResult(
                 tool_name=self.spec.name,
@@ -140,7 +177,9 @@ class SkillManageTool(BaseTool):
         )
 
     def _delete(self, name: str) -> ToolResult:
-        path = self._skills_dir / f"{name}.toml"
+        path = self._skill_path(name)
+        if path is None:
+            return self._invalid_name()
         if not path.exists():
             return ToolResult(
                 tool_name=self.spec.name,

@@ -6,7 +6,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
@@ -172,6 +172,17 @@ def _apply_hunks(original: str, hunks: List[_Hunk]) -> str:
     return "".join(orig_lines)
 
 
+def _protected_patch_target(target: Any, backup: Any) -> Optional[str]:
+    """Protected category of the patch target or of its ``.bak`` backup."""
+    from openjarvis.security.protected_state import first_protected_target
+
+    if not isinstance(target, str) or not target:
+        return None
+    paths = [target, target + ".bak"] if backup else [target]
+    category = first_protected_target(paths)
+    return category.value if category is not None else None
+
+
 # ---------------------------------------------------------------------------
 # ApplyPatchTool
 # ---------------------------------------------------------------------------
@@ -219,6 +230,15 @@ class ApplyPatchTool(BaseTool):
             required_capabilities=["file:write"],
         )
 
+    def protected_target(self, params: Dict[str, Any]) -> Optional[str]:
+        target = params.get("path")
+        if not target:
+            try:
+                target, _ = _parse_patch(params.get("patch") or "")
+            except (TypeError, ValueError):
+                return None
+        return _protected_patch_target(target, params.get("backup", True))
+
     def execute(self, **params: Any) -> ToolResult:
         patch_text = params.get("patch", "")
         if not patch_text:
@@ -262,6 +282,16 @@ class ApplyPatchTool(BaseTool):
                 success=False,
             )
 
+        # Neither the patched file nor its backup may be protected OpenJarvis
+        # state: a ``.bak`` symlinked into the home would otherwise let the
+        # backup copy overwrite a protected file.
+        backup = params.get("backup", True)
+        protected = _protected_patch_target(target, backup)
+        if protected is not None:
+            from openjarvis.tools.outcomes import protected_target_denial
+
+            return protected_target_denial("apply_patch", protected)
+
         # Check file exists
         if not path.exists():
             return ToolResult(
@@ -298,7 +328,6 @@ class ApplyPatchTool(BaseTool):
             )
 
         # Backup
-        backup = params.get("backup", True)
         backup_path: Optional[str] = None
         if backup:
             bak = Path(str(path) + ".bak")

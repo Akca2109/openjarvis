@@ -302,8 +302,13 @@ def _build_tools(
     model_name: str,
     *,
     channel=None,
+    memory_files_config=None,
 ):
     """Instantiate tool objects from names.
+
+    ``memory_files_config`` is the effective (persona-aware) memory-file
+    config the system prompt is built from; when given, ``memory_manage`` and
+    ``user_profile_manage`` edit exactly those files.
 
     ``channel`` is an optional :class:`BaseChannel` used by ``channel_*``
     tools. Threading it through here mirrors how memory backends are
@@ -316,6 +321,12 @@ def _build_tools(
     hallucinated or dropped replies downstream.
     """
     from openjarvis.core.registry import ToolRegistry
+
+    memory_tools: dict = {}
+    if memory_files_config is not None:
+        from openjarvis.prompt.builder import memory_tool_kwargs
+
+        memory_tools = memory_tool_kwargs(memory_files_config)
 
     tools = []
     for name in tool_names:
@@ -347,6 +358,8 @@ def _build_tools(
                     name,
                 )
             tools.append(tool_cls(channel=channel))
+        elif name in memory_tools:
+            tools.append(tool_cls(**memory_tools[name]))
         elif name == "llm":
             tools.append(tool_cls(engine=engine, model=model_name))
         elif name == "file_read":
@@ -392,7 +405,13 @@ def _run_agent(
         # Trigger tool registration
         import openjarvis.tools  # noqa: F401
 
-        tools = _build_tools(tool_names, config, engine, model_name)
+        tools = _build_tools(
+            tool_names,
+            config,
+            engine,
+            model_name,
+            memory_files_config=memory_files_config or config.memory_files,
+        )
 
     # MCP tools from config.tools.mcp.servers. Loaded regardless of
     # tool_names — if the caller passed --tools, the loader filters MCP

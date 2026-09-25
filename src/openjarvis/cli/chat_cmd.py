@@ -313,7 +313,13 @@ def chat(
                     if tool_names_list:
                         import openjarvis.tools  # noqa: F401 — trigger registration
                         from openjarvis.core.registry import ToolRegistry
+                        from openjarvis.prompt.builder import memory_tool_kwargs
                         from openjarvis.tools._stubs import BaseTool
+
+                        # The dedicated memory/profile tools must edit the
+                        # same effective (persona-aware) files the system
+                        # prompt is built from.
+                        tool_kwargs = memory_tool_kwargs(effective_mf)
 
                         tool_instances = []
                         for tname in tool_names_list:
@@ -322,7 +328,9 @@ def chat(
                                 if isinstance(tcls, type) and issubclass(
                                     tcls, BaseTool
                                 ):
-                                    tool_instances.append(tcls())
+                                    tool_instances.append(
+                                        tcls(**tool_kwargs.get(tname, {}))
+                                    )
                                 elif isinstance(tcls, BaseTool):
                                     tool_instances.append(tcls)
                         if tool_instances:

@@ -20,8 +20,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
+from openjarvis.security.protected_state import PROTECTED_TARGET_KEY
 from openjarvis.tools.call_ids import new_tool_call_id
-from openjarvis.tools.outcomes import ToolOutcome, annotate_tool_result
+from openjarvis.tools.outcomes import (
+    ToolOutcome,
+    annotate_tool_result,
+    protected_target_denial,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +162,15 @@ class BaseTool(ABC):
     @abstractmethod
     def execute(self, **params: Any) -> ToolResult:
         """Execute the tool with the given parameters."""
+
+    def protected_target(self, params: Dict[str, Any]) -> Optional[str]:
+        """Return the protected-state category this call would modify, if any.
+
+        Tools that write model-chosen paths override this (see
+        :mod:`openjarvis.security.protected_state`). ``ToolExecutor`` denies
+        a call that returns a category before any confirmation prompt.
+        """
+        return None
 
     def to_openai_function(self) -> Dict[str, Any]:
         """Convert to OpenAI function-calling format."""
@@ -383,6 +397,25 @@ class ToolExecutor:
                         ),
                     )
 
+        # Protected persistent state (memory, persona, instructions, config,
+        # security, runtime stores) is never a valid target for a generic
+        # tool — regardless of taint, and confirmation is no escape hatch.
+        try:
+            protected = tool.protected_target(params)
+        except Exception:
+            # The tool re-checks before writing; a failure here surfaces there.
+            logger.debug("Protected-target check failed", exc_info=True)
+            protected = None
+        if protected is not None:
+            denial = protected_target_denial(tool_call.name, protected)
+            return self._blocked(
+                tool_call.name,
+                call_id,
+                ToolOutcome.PROTECTED_TARGET_DENIED,
+                denial.content,
+                metadata=denial.metadata,
+            )
+
         # Taint checking (sink policy). The effective taint is the union of any
         # per-call ``_taint`` and the running session taint accumulated from
         # earlier tool outputs — so "read a secret, then http_request it out"
@@ -594,23 +627,31 @@ class ToolExecutor:
         call_id: str,
         outcome: ToolOutcome,
         content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
         """Build the result for a call rejected before execution.
 
         Publishes ``TOOL_CALL_BLOCKED`` with correlation fields only — never
-        the call's arguments or any tool output.
+        the call's arguments or any tool output. A protected-target denial
+        adds its bounded ``protected_target`` category.
         """
         if self._bus:
-            self._bus.publish(
-                EventType.TOOL_CALL_BLOCKED,
-                {
-                    "tool": tool_name,
-                    "tool_call_id": call_id,
-                    "outcome": outcome.value,
-                    "agent": self._agent_id,
-                },
-            )
-        result = ToolResult(tool_name=tool_name, content=content, success=False)
+            payload: Dict[str, Any] = {
+                "tool": tool_name,
+                "tool_call_id": call_id,
+                "outcome": outcome.value,
+                "agent": self._agent_id,
+            }
+            if metadata and PROTECTED_TARGET_KEY in metadata:
+                payload[PROTECTED_TARGET_KEY] = metadata[PROTECTED_TARGET_KEY]
+            self._bus.publish(EventType.TOOL_CALL_BLOCKED, payload)
+        result = ToolResult(
+            tool_name=tool_name,
+            content=content,
+            success=False,
+            metadata=dict(metadata or {}),
+        )
         return annotate_tool_result(result, tool_call_id=call_id, outcome=outcome)
 
     @staticmethod

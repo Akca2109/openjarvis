@@ -18,6 +18,8 @@ class MemoryManageTool(BaseTool):
     def __init__(self, memory_path: Path | str | None = None) -> None:
         if memory_path is None:
             memory_path = get_config_dir() / "MEMORY.md"
+        # An empty path is the persona "none" opt-out: nothing to manage.
+        self._disabled = str(memory_path) == ""
         self._memory_path = Path(memory_path).expanduser()
 
     @property
@@ -57,6 +59,12 @@ class MemoryManageTool(BaseTool):
         )
 
     def execute(self, **params: Any) -> ToolResult:
+        if self._disabled:
+            return ToolResult(
+                tool_name=self.spec.name,
+                success=False,
+                content="Agent memory is disabled for the active persona.",
+            )
         action = params.get("action", "read")
         entry = params.get("entry", "")
         new_entry = params.get("new_entry", "")

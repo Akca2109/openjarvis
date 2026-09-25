@@ -31,6 +31,15 @@ def setup_security(
 
     Returns a SecurityContext. No-ops if config.security.enabled is False.
     """
+    # Protected persistent state is a boundary, not a toggleable guardrail:
+    # record the effective config's paths even when guardrails are off.
+    try:
+        from openjarvis.security.protected_state import register_protected_config
+
+        register_protected_config(config)
+    except Exception as exc:
+        logger.debug("Failed to register protected state paths: %s", exc)
+
     if not config.security.enabled:
         return SecurityContext(engine=engine)
 

@@ -20,6 +20,27 @@ class PromptSection:
     cache_segment: PromptCacheSegment
 
 
+def resolve_memory_files(mf: MemoryFilesConfig) -> MemoryFilesConfig:
+    """Return the SOUL/MEMORY/USER paths :class:`SystemPromptBuilder` reads.
+
+    Tools that modify these files must target the same effective paths.
+    """
+    return SystemPromptBuilder._resolve_persona(mf)
+
+
+def memory_tool_kwargs(mf: MemoryFilesConfig) -> dict[str, dict[str, str]]:
+    """Constructor kwargs pointing the dedicated memory tools at *mf*'s files.
+
+    Keyed by tool name. With the persona ``none`` opt-out the paths are empty
+    and the tools report themselves disabled.
+    """
+    effective = resolve_memory_files(mf)
+    return {
+        "memory_manage": {"memory_path": effective.memory_path},
+        "user_profile_manage": {"user_path": effective.user_path},
+    }
+
+
 class SystemPromptBuilder:
     """Assembles system prompts with frozen prefix for cache stability."""
 

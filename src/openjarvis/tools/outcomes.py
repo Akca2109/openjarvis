@@ -33,6 +33,8 @@ class ToolOutcome(str, Enum):
     BOUNDARY_BLOCKED = "boundary_blocked"
     CAPABILITY_DENIED = "capability_denied"
     TAINT_BLOCKED = "taint_blocked"
+    # The call would modify protected OpenJarvis persistent state.
+    PROTECTED_TARGET_DENIED = "protected_target_denied"
     # Confirmation was refused or could not be obtained (defaults to No).
     DENIED = "denied"
     # Agent-level gates outside ToolExecutor.
@@ -47,6 +49,27 @@ def annotate_tool_result(
     result.metadata[OUTCOME_KEY] = outcome.value
     result.metadata[TOOL_CALL_ID_KEY] = tool_call_id
     return result
+
+
+def protected_target_denial(tool_name: str, category: str) -> ToolResult:
+    """A failed result for a call denied because its target is protected.
+
+    Carries only the bounded category under ``protected_target`` — never the
+    path, arguments, or content.
+    """
+    from openjarvis.security.protected_state import (
+        PROTECTED_TARGET_KEY,
+        ProtectedCategory,
+        protected_target_message,
+    )
+
+    category = ProtectedCategory(category)
+    return ToolResult(
+        tool_name=tool_name,
+        content=protected_target_message(category, tool_name),
+        success=False,
+        metadata={PROTECTED_TARGET_KEY: category.value},
+    )
 
 
 def tool_result_outcome(result: ToolResult) -> str:
@@ -71,6 +94,7 @@ __all__ = [
     "TOOL_CALL_ID_KEY",
     "ToolOutcome",
     "annotate_tool_result",
+    "protected_target_denial",
     "tool_result_call_id",
     "tool_result_outcome",
 ]

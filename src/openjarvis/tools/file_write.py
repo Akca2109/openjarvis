@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
@@ -63,6 +63,12 @@ class FileWriteTool(BaseTool):
             required_capabilities=["file:write"],
         )
 
+    def protected_target(self, params: Dict[str, Any]) -> Optional[str]:
+        from openjarvis.security.protected_state import classify_protected_target
+
+        category = classify_protected_target(params.get("path") or "")
+        return category.value if category is not None else None
+
     def _is_path_allowed(self, path: Path) -> bool:
         """Check if path is within allowed directories."""
         if not self._allowed_dirs:
@@ -110,6 +116,15 @@ class FileWriteTool(BaseTool):
                 content=f"Access denied: {file_path} is a sensitive file.",
                 success=False,
             )
+
+        # Protected OpenJarvis state (memory, persona, config, skills, stores)
+        # is never writable through a generic tool; re-checked here so direct
+        # callers that bypass ToolExecutor are held to the same policy.
+        protected = self.protected_target({"path": file_path})
+        if protected is not None:
+            from openjarvis.tools.outcomes import protected_target_denial
+
+            return protected_target_denial("file_write", protected)
 
         if not self._is_path_allowed(path):
             return ToolResult(

@@ -18,6 +18,8 @@ class UserProfileManageTool(BaseTool):
     def __init__(self, user_path: Path | str | None = None) -> None:
         if user_path is None:
             user_path = get_config_dir() / "USER.md"
+        # An empty path is the persona "none" opt-out: nothing to manage.
+        self._disabled = str(user_path) == ""
         self._user_path = Path(user_path).expanduser()
 
     @property
@@ -55,6 +57,12 @@ class UserProfileManageTool(BaseTool):
         )
 
     def execute(self, **params: Any) -> ToolResult:
+        if self._disabled:
+            return ToolResult(
+                tool_name=self.spec.name,
+                success=False,
+                content="The user profile is disabled for the active persona.",
+            )
         action = params.get("action", "read")
         entry = params.get("entry", "")
         new_entry = params.get("new_entry", "")

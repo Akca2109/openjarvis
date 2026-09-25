@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
@@ -87,6 +87,28 @@ def _format_table(columns: List[str], rows: List[Tuple[Any, ...]]) -> str:
     return "\n".join(lines)
 
 
+def _protected_db(db_path: Any) -> Optional[str]:
+    """Protected category of a SQLite path (``file:`` URIs included)."""
+    from openjarvis.security.protected_state import classify_protected_target
+
+    if not isinstance(db_path, str) or not db_path or db_path == ":memory:":
+        return None
+    if db_path.startswith("file:"):
+        from urllib.parse import unquote, urlsplit
+
+        db_path = unquote(urlsplit(db_path).path)
+        if not db_path or db_path == ":memory:":
+            return None
+    category = classify_protected_target(db_path)
+    return category.value if category is not None else None
+
+
+def _deny_protected_attach(action: int, arg1: Optional[str], *_: Optional[str]) -> int:
+    if action == sqlite3.SQLITE_ATTACH and _protected_db(arg1) is not None:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 # ---------------------------------------------------------------------------
 # DatabaseQueryTool
 # ---------------------------------------------------------------------------
@@ -148,6 +170,12 @@ class DatabaseQueryTool(BaseTool):
             required_capabilities=["code:execute"],
         )
 
+    def protected_target(self, params: Dict[str, Any]) -> Optional[str]:
+        # Read-only connections cannot mutate; only writable ones are gated.
+        if params.get("read_only", True) or params.get("db_url"):
+            return None
+        return _protected_db(params.get("db_path"))
+
     def execute(self, **params: Any) -> ToolResult:
         query: str = params.get("query", "")
         db_path: Optional[str] = params.get("db_path")
@@ -207,6 +235,15 @@ class DatabaseQueryTool(BaseTool):
                     success=False,
                 )
 
+        # A writable connection must never open OpenJarvis' own stores
+        # (memory, conversations, audit, approvals, ...).
+        if not read_only:
+            protected = _protected_db(db_path)
+            if protected is not None:
+                from openjarvis.tools.outcomes import protected_target_denial
+
+                return protected_target_denial("db_query", protected)
+
         # Build connection string
         if read_only and db_path:
             # Use URI mode for read-only access to file databases
@@ -228,6 +265,11 @@ class DatabaseQueryTool(BaseTool):
                 content=f"Database connection error: {exc}",
                 success=False,
             )
+
+        if not read_only:
+            # ATTACH and VACUUM INTO name a second database file; SQLite
+            # reports it to the authorizer, so no SQL parsing is needed.
+            conn.set_authorizer(_deny_protected_attach)
 
         try:
             cursor = conn.cursor()

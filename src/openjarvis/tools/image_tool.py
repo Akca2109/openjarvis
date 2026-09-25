@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Dict, Optional
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
@@ -55,6 +55,12 @@ class ImageGenerateTool(BaseTool):
             required_capabilities=["network:fetch"],
         )
 
+    def protected_target(self, params: Dict[str, Any]) -> Optional[str]:
+        from openjarvis.security.protected_state import classify_protected_target
+
+        category = classify_protected_target(params.get("output_path") or "")
+        return category.value if category is not None else None
+
     def execute(self, **params: Any) -> ToolResult:
         prompt = params.get("prompt", "")
         if not prompt:
@@ -77,6 +83,14 @@ class ImageGenerateTool(BaseTool):
 
         provider = params.get("provider", "openai")
         output_path = params.get("output_path")
+
+        # Refuse before generating: the image must not land in protected
+        # OpenJarvis state.
+        protected = self.protected_target({"output_path": output_path})
+        if protected is not None:
+            from openjarvis.tools.outcomes import protected_target_denial
+
+            return protected_target_denial("image_generate", protected)
 
         if provider != "openai":
             return ToolResult(

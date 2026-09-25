@@ -6,7 +6,7 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 from openjarvis.core.registry import ToolRegistry, TTSRegistry
 from openjarvis.core.types import ToolResult
@@ -54,6 +54,18 @@ class TextToSpeechTool(BaseTool):
             timeout_seconds=120.0,
         )
 
+    def protected_target(self, params: Dict[str, Any]) -> Optional[str]:
+        from openjarvis.security.protected_state import first_protected_target
+
+        output_dir = params.get("output_dir")
+        if not isinstance(output_dir, str) or not output_dir:
+            return None
+        # The directory itself (created if missing) and a file inside it.
+        category = first_protected_target(
+            [output_dir, str(Path(output_dir) / "jarvis-tts-output.mp3")]
+        )
+        return category.value if category is not None else None
+
     def execute(self, **params: Any) -> ToolResult:
         # Ensure TTS backends are registered
         import openjarvis.speech  # noqa: F401
@@ -93,6 +105,13 @@ class TextToSpeechTool(BaseTool):
                 success=False,
             )
 
+        # Refuse before synthesizing: audio must not land in protected state.
+        protected = self.protected_target({"output_dir": output_dir})
+        if protected is not None:
+            from openjarvis.tools.outcomes import protected_target_denial
+
+            return protected_target_denial("text_to_speech", protected)
+
         if not TTSRegistry.contains(backend_key):
             return ToolResult(
                 tool_name="text_to_speech",
@@ -121,7 +140,6 @@ class TextToSpeechTool(BaseTool):
         else:
             out_dir = Path(tempfile.mkdtemp(prefix="jarvis-tts-"))
 
-        out_dir.mkdir(parents=True, exist_ok=True)
         ext = result.format or "mp3"
         # Name each file uniquely so several lines saved to one output_dir do
         # not overwrite each other. A random token (not a timestamp) guarantees
@@ -129,6 +147,15 @@ class TextToSpeechTool(BaseTool):
         slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "line"
         voice_tag = (result.voice_id or "")[:8] or backend_key
         audio_path = out_dir / f"{slug}-{voice_tag}-{uuid.uuid4().hex[:8]}.{ext}"
+        if output_dir:
+            from openjarvis.security.protected_state import classify_protected_target
+
+            category = classify_protected_target(audio_path)
+            if category is not None:
+                from openjarvis.tools.outcomes import protected_target_denial
+
+                return protected_target_denial("text_to_speech", category.value)
+        out_dir.mkdir(parents=True, exist_ok=True)
         result.save(audio_path)
 
         return ToolResult(
